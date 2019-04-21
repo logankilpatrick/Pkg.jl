@@ -431,20 +431,43 @@ function deps_graph(ctx::Context, uuid_to_name::Dict{UUID,String}, reqs::Require
     return Graph(all_versions, all_deps, all_compat, uuid_to_name, reqs, fixed, #=verbose=# ctx.graph_verbose)
 end
 
+function get_archive_url_from_repo(url::String, ref)
+    if (m = match(r"https://github.com/(.*?)/(.*?).git", url)) != nothing
+        return "https://api.github.com/repos/$(m.captures[1])/$(m.captures[2])/tarball/$(ref)"
+    end
+    return nothing
+end
+
 function load_urls(ctx::Context, pkgs::Vector{PackageSpec})
-    urls = Dict{UUID,Vector{String}}()
+    archive_urls = Dict{UUID,Vector{String}}()
+    repo_urls = Dict{UUID,Vector{String}}()
     for pkg in pkgs
+        name = pkg.name
         uuid = pkg.uuid
         ver = pkg.version::VersionNumber
-        urls[uuid] = String[]
+        tree_hash = pkg.tree_hash
+        repo_urls[uuid] = String[]
+        archive_urls[uuid] = String[]
         for path in registered_paths(ctx.env, uuid)
             info = parse_toml(path, "Package.toml")
+            # repo urls
             repo = info["repo"]
-            repo in urls[uuid] || push!(urls[uuid], repo)
+            repo in repo_urls[uuid] || push!(repo_urls[uuid], repo)
+            # archive urls
+            if haskey(info, "archive")
+                arch = info["archive"]
+                arch = replace(arch, "{name}" => name)
+                arch = replace(arch, "{uuid}" => string(uuid))
+                arch = replace(arch, "{version}" => string(ver))
+                arch = replace(arch, "{git-tree-sha1}" => tree_hash)
+                arch in archive_urls[uuid] || push!(archive_urls[uuid], arch)
+            end
+            # try to create archive url from repo-url
+            arch = get_archive_url_from_repo(repo, tree_hash)
+            arch !== nothing && !(arch in archive_urls[uuid]) && push!(archive_urls[uuid], arch)
         end
     end
-    foreach(sort!, values(urls))
-    return urls
+    return archive_urls, repo_urls
 end
 
 ########################
@@ -463,9 +486,7 @@ function install_archive(
     hash::SHA1,
     version_path::String
 )::Bool
-    for url in urls
-        archive_url = get_archive_url_for_version(url, hash)
-        archive_url !== nothing || continue
+    for archive_url in urls
         path = tempname() * randstring(6) * ".tar.gz"
         url_success = true
         cmd = BinaryProvider.gen_download_cmd(archive_url, path);
@@ -559,12 +580,12 @@ end
 # install & update manifest
 function download_source(ctx::Context, pkgs::Vector{PackageSpec}; readonly=true)
     pkgs = filter(tracking_registered_version, pkgs)
-    urls = load_urls(ctx, pkgs)
-    return download_source(ctx, pkgs, urls; readonly=readonly)
+    repo_urls, archive_urls = load_urls(ctx, pkgs)
+    return download_source(ctx, pkgs, repo_urls, archive_urls; readonly=readonly)
 end
 
 function download_source(ctx::Context, pkgs::Vector{PackageSpec},
-                        urls::Dict{UUID, Vector{String}}; readonly=true)
+                        repo_urls::Dict{UUID, Vector{String}}, archive_urls::Dict{UUID, Vector{String}}; readonly=true)
     BinaryProvider.probe_platform_engines!()
     new_versions = UUID[]
 
@@ -602,12 +623,12 @@ function download_source(ctx::Context, pkgs::Vector{PackageSpec},
                     continue
                 end
                 try
-                    success = install_archive(urls[pkg.uuid], pkg.tree_hash, path)
+                    success = install_archive(archive_urls[pkg.uuid], pkg.tree_hash, path)
                     if success && readonly
                         set_readonly(path) # In add mode, files should be read-only
                     end
                     if ctx.use_only_tarballs_for_downloads && !success
-                        pkgerror("failed to get tarball from $(urls[pkg.uuid])")
+                        pkgerror("failed to get tarball from $(archive_urls[pkg.uuid])")
                     end
                     put!(results, (pkg, success, path))
                 catch err
@@ -637,7 +658,7 @@ function download_source(ctx::Context, pkgs::Vector{PackageSpec},
     for (pkg, path) in missed_packages
         uuid = pkg.uuid
         if !ctx.preview
-            install_git(ctx, pkg.uuid, pkg.name, pkg.tree_hash, urls[uuid], pkg.version::VersionNumber, path)
+            install_git(ctx, pkg.uuid, pkg.name, pkg.tree_hash, repo_urls[uuid], pkg.version::VersionNumber, path)
             readonly && set_readonly(path)
         end
         vstr = pkg.version != nothing ? "v$(pkg.version)" : "[$h]"
