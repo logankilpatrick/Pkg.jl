@@ -23,19 +23,19 @@ function check_package_name(x::AbstractString, mode=nothing)
         message = "$x is not a valid packagename."
         if mode !== nothing && any(occursin.(['\\','/'], x)) # maybe a url or a path
             message *= "\nThe argument appears to be a URL or path, perhaps you meant " *
-                "`Pkg.$mode(PackageSpec(url=\"...\"))` or `Pkg.$mode(PackageSpec(path=\"...\"))`."
+                "`Pkg.$mode(GenericDependency(url=\"...\"))` or `Pkg.$mode(GenericDependency(path=\"...\"))`."
         end
         pkgerror(message)
     end
-    return PackageSpec(x)
+    return GenericDependency(x)
 end
 
-develop(pkg::Union{AbstractString, PackageSpec}; kwargs...) = develop([pkg]; kwargs...)
+develop(pkg::Union{AbstractString, D}; kwargs...) where {D <: Dependency} = develop([pkg]; kwargs...)
 develop(pkgs::Vector{<:AbstractString}; kwargs...) =
     develop([check_package_name(pkg, :develop) for pkg in pkgs]; kwargs...)
-develop(pkgs::Vector{PackageSpec}; kwargs...)      = develop(Context(), pkgs; kwargs...)
-function develop(ctx::Context, pkgs::Vector{PackageSpec};
-                 shared::Bool=true, keep_manifest::Bool=false, kwargs...)
+develop(pkgs::Vector{D}; kwargs...) where {D <: Dependency} = develop(Context(), pkgs; kwargs...)
+function develop(ctx::Context, pkgs::Vector{D};
+                 shared::Bool=true, keep_manifest::Bool=false, kwargs...) where {D <: Dependency}
     pkgs = deepcopy(pkgs) # deepcopy for avoid mutating PackageSpec members
     Context!(ctx; kwargs...)
 
@@ -61,11 +61,11 @@ function develop(ctx::Context, pkgs::Vector{PackageSpec};
     return
 end
 
-add(pkg::Union{AbstractString, PackageSpec}; kwargs...) = add([pkg]; kwargs...)
+add(pkg::Union{AbstractString, <:Dependency}; kwargs...) = add([pkg]; kwargs...)
 add(pkgs::Vector{<:AbstractString}; kwargs...) =
     add([check_package_name(pkg, :add) for pkg in pkgs]; kwargs...)
-add(pkgs::Vector{PackageSpec}; kwargs...)      = add(Context(), pkgs; kwargs...)
-function add(ctx::Context, pkgs::Vector{PackageSpec}; kwargs...)
+add(pkgs::Vector{<:Dependency}; kwargs...) = add(Context(), pkgs; kwargs...)
+function add(ctx::Context, pkgs::Vector{D}; kwargs...) where {D <: Dependency}
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     Context!(ctx; kwargs...)
 
@@ -74,7 +74,7 @@ function add(ctx::Context, pkgs::Vector{PackageSpec}; kwargs...)
         pkg.name == "julia" && pkgerror("Trying to add julia as a package")
         pkg.name !== nothing || pkg.uuid !== nothing || pkg.repo.url !== nothing ||
             pkgerror("A package must be specified by `name`, `uuid`, `url`, or `path`.")
-        if (pkg.repo.url !== nothing || pkg.repo.rev !== nothing)
+        if isa(pkg, PackageSpec) && (pkg.repo.url !== nothing || pkg.repo.rev !== nothing)
             pkg.version == VersionSpec() ||
                 pkgerror("Can not specify version when tracking a repo.")
         end
@@ -83,7 +83,7 @@ function add(ctx::Context, pkgs::Vector{PackageSpec}; kwargs...)
     ctx.preview && preview_info()
     Types.update_registries(ctx)
 
-    repo_pkgs = [pkg for pkg in pkgs if (pkg.repo.url !== nothing || pkg.repo.rev !== nothing)]
+    repo_pkgs = [pkg for pkg in pkgs if isa(pkg, PackageSpec) && (pkg.repo.url !== nothing || pkg.repo.rev !== nothing)]
     new_git = handle_repos_add!(ctx, repo_pkgs)
     # repo + unpinned -> name, uuid, repo.rev, repo.url, tree_hash
     # repo + pinned -> name, uuid, tree_hash
@@ -101,11 +101,11 @@ function add(ctx::Context, pkgs::Vector{PackageSpec}; kwargs...)
     return
 end
 
-rm(pkg::Union{AbstractString, PackageSpec}; kwargs...) = rm([pkg]; kwargs...)
-rm(pkgs::Vector{<:AbstractString}; kwargs...)          = rm([PackageSpec(pkg) for pkg in pkgs]; kwargs...)
-rm(pkgs::Vector{PackageSpec}; kwargs...)               = rm(Context(), pkgs; kwargs...)
+rm(pkg::Union{AbstractString, D}; kwargs...) where {D <: Dependency} = rm([pkg]; kwargs...)
+rm(pkgs::Vector{<:AbstractString}; kwargs...)          = rm([GenericDependency(pkg) for pkg in pkgs]; kwargs...)
+rm(pkgs::Vector{D}; kwargs...) where {D <: Dependency} = rm(Context(), pkgs; kwargs...)
 
-function rm(ctx::Context, pkgs::Vector{PackageSpec}; mode=PKGMODE_PROJECT, kwargs...)
+function rm(ctx::Context, pkgs::Vector{D}; mode=PKGMODE_PROJECT, kwargs...) where {D <: Dependency}
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     foreach(pkg -> pkg.mode = mode, pkgs)
 
@@ -131,15 +131,15 @@ function rm(ctx::Context, pkgs::Vector{PackageSpec}; mode=PKGMODE_PROJECT, kwarg
     return
 end
 
-up(ctx::Context; kwargs...)                            = up(ctx, PackageSpec[]; kwargs...)
-up(; kwargs...)                                        = up(PackageSpec[]; kwargs...)
-up(pkg::Union{AbstractString, PackageSpec}; kwargs...) = up([pkg]; kwargs...)
-up(pkgs::Vector{<:AbstractString}; kwargs...)          = up([PackageSpec(pkg) for pkg in pkgs]; kwargs...)
-up(pkgs::Vector{PackageSpec}; kwargs...)               = up(Context(), pkgs; kwargs...)
+up(ctx::Context; kwargs...)                             = up(ctx, Dependency[]; kwargs...)
+up(; kwargs...)                                         = up(Dependency[]; kwargs...)
+up(pkg::Union{AbstractString, D}; kwargs...) where {D <: Dependency} = up([pkg]; kwargs...)
+up(pkgs::Vector{<:AbstractString}; kwargs...)           = up([GenericDependency(pkg) for pkg in pkgs]; kwargs...)
+up(pkgs::Vector{D}; kwargs...)  where {D <: Dependency} = up(Context(), pkgs; kwargs...)
 
-function up(ctx::Context, pkgs::Vector{PackageSpec};
+function up(ctx::Context, pkgs::Vector{D};
             level::UpgradeLevel=UPLEVEL_MAJOR, mode::PackageMode=PKGMODE_PROJECT,
-            update_registry::Bool=true, kwargs...)
+            update_registry::Bool=true, kwargs...) where {D <: Dependency}
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     foreach(pkg -> pkg.mode = mode, pkgs)
 
@@ -152,11 +152,11 @@ function up(ctx::Context, pkgs::Vector{PackageSpec};
     if isempty(pkgs)
         if mode == PKGMODE_PROJECT
             for (name::String, uuid::UUID) in ctx.env.project.deps
-                push!(pkgs, PackageSpec(name=name, uuid=uuid))
+                push!(pkgs, GenericDependency(name=name, uuid=uuid))
             end
         elseif mode == PKGMODE_MANIFEST
             for (uuid, entry) in ctx.env.manifest
-                push!(pkgs, PackageSpec(name=entry.name, uuid=uuid))
+                push!(pkgs, GenericDependency(name=entry.name, uuid=uuid))
             end
         end
     else
@@ -172,11 +172,11 @@ end
 resolve(ctx::Context=Context()) =
     up(ctx, level=UPLEVEL_FIXED, mode=PKGMODE_MANIFEST, update_registry=false)
 
-pin(pkg::Union{AbstractString, PackageSpec}; kwargs...) = pin([pkg]; kwargs...)
-pin(pkgs::Vector{<:AbstractString}; kwargs...)          = pin([PackageSpec(pkg) for pkg in pkgs]; kwargs...)
-pin(pkgs::Vector{PackageSpec}; kwargs...)               = pin(Context(), pkgs; kwargs...)
+pin(pkg::Union{AbstractString, D}; kwargs...) where {D <: Dependency} = pin([pkg]; kwargs...)
+pin(pkgs::Vector{<:AbstractString}; kwargs...)          = pin([GenericDependency(pkg) for pkg in pkgs]; kwargs...)
+pin(pkgs::Vector{D}; kwargs...) where {D <: Dependency} = pin(Context(), pkgs; kwargs...)
 
-function pin(ctx::Context, pkgs::Vector{PackageSpec}; kwargs...)
+function pin(ctx::Context, pkgs::Vector{D}; kwargs...) where {D <: Dependency}
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     Context!(ctx; kwargs...)
     ctx.preview && preview_info()
@@ -196,11 +196,11 @@ function pin(ctx::Context, pkgs::Vector{PackageSpec}; kwargs...)
 end
 
 
-free(pkg::Union{AbstractString, PackageSpec}; kwargs...) = free([pkg]; kwargs...)
-free(pkgs::Vector{<:AbstractString}; kwargs...)          = free([PackageSpec(pkg) for pkg in pkgs]; kwargs...)
-free(pkgs::Vector{PackageSpec}; kwargs...)       = free(Context(), pkgs; kwargs...)
+free(pkg::Union{AbstractString, D}; kwargs...) where {D <: Dependency} = free([pkg]; kwargs...)
+free(pkgs::Vector{<:AbstractString}; kwargs...)          = free([GenericDependency(pkg) for pkg in pkgs]; kwargs...)
+free(pkgs::Vector{D}; kwargs...) where {D <: Dependency} = free(Context(), pkgs; kwargs...)
 
-function free(ctx::Context, pkgs::Vector{PackageSpec}; kwargs...)
+function free(ctx::Context, pkgs::Vector{D}; kwargs...) where {D <: Dependency}
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     Context!(ctx; kwargs...)
     ctx.preview && preview_info()
@@ -224,12 +224,12 @@ function free(ctx::Context, pkgs::Vector{PackageSpec}; kwargs...)
     return
 end
 
-test(;kwargs...)                                         = test(PackageSpec[]; kwargs...)
-test(pkg::Union{AbstractString, PackageSpec}; kwargs...) = test([pkg]; kwargs...)
-test(pkgs::Vector{<:AbstractString}; kwargs...)          = test([PackageSpec(pkg) for pkg in pkgs]; kwargs...)
-test(pkgs::Vector{PackageSpec}; kwargs...)               = test(Context(), pkgs; kwargs...)
-function test(ctx::Context, pkgs::Vector{PackageSpec};
-              coverage=false, test_fn=nothing, kwargs...)
+test(;kwargs...)                                         = test(Dependency[]; kwargs...)
+test(pkg::Union{AbstractString, D}; kwargs...) where {D <: Dependency} = test([pkg]; kwargs...)
+test(pkgs::Vector{<:AbstractString}; kwargs...)          = test([GenericDependency(pkg) for pkg in pkgs]; kwargs...)
+test(pkgs::Vector{D}; kwargs...) where {D <: Dependency} = test(Context(), pkgs; kwargs...)
+function test(ctx::Context, pkgs::Vector{D};
+              coverage=false, test_fn=nothing, kwargs...) where {D <: Dependency}
     pkgs = deepcopy(pkgs) # deepcopy for avoid mutating PackageSpec members
     Context!(ctx; kwargs...)
     ctx.preview && preview_info()
@@ -248,7 +248,7 @@ end
 
 installed() = __installed(PKGMODE_PROJECT)
 function __installed(mode::PackageMode=PKGMODE_MANIFEST)
-    diffs = Display.status(Context(), PackageSpec[], mode=mode, use_as_api=true)
+    diffs = Display.status(Context(), Dependency[], mode=mode, use_as_api=true)
     version_status = Dict{String, Union{VersionNumber,Nothing}}()
     diffs == nothing && return version_status
     for entry in diffs
@@ -374,12 +374,12 @@ function gc(ctx::Context=Context(); kwargs...)
     return
 end
 
-build(pkgs...; kwargs...) = build([PackageSpec(pkg) for pkg in pkgs]; kwargs...)
-build(pkg::Array{Union{}, 1}; kwargs...) = build(PackageSpec[]; kwargs...)
-build(pkg::PackageSpec; kwargs...) = build([pkg]; kwargs...)
-build(pkgs::Vector{PackageSpec}; kwargs...) = build(Context(), pkgs; kwargs...)
-function build(ctx::Context, pkgs::Vector{PackageSpec}; verbose=false, kwargs...)
-    pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
+build(pkgs...; kwargs...) = build([GenericDependency(pkg) for pkg in pkgs]; kwargs...)
+build(pkg::Array{Union{}, 1}; kwargs...) = build(Dependency[]; kwargs...)
+build(pkg::Dependency; kwargs...) = build([pkg]; kwargs...)
+build(pkgs::Vector{Dependency}; kwargs...) = build(Context(), pkgs; kwargs...)
+function build(ctx::Context, pkgs::Vector{Dependency}; verbose=false, kwargs...)
+    pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating Dependency members
     Context!(ctx; kwargs...)
 
     ctx.preview && preview_info()
@@ -388,7 +388,7 @@ function build(ctx::Context, pkgs::Vector{PackageSpec}; verbose=false, kwargs...
             push!(pkgs, ctx.env.pkg)
         else
             for (uuid, entry) in ctx.env.manifest
-                push!(pkgs, PackageSpec(entry.name, uuid))
+                push!(pkgs, GenericDependency(entry.name, uuid))
             end
         end
     end
@@ -468,7 +468,7 @@ function instantiate(ctx::Context; manifest::Union{Bool, Nothing}=nothing,
     end
     Operations.prune_manifest(ctx.env)
     Types.update_registries(ctx)
-    pkgs = PackageSpec[]
+    pkgs = Dependency[]
     Operations.load_all_deps!(ctx, pkgs)
     Operations.check_registered(ctx, pkgs)
     new_git = UUID[]
@@ -480,15 +480,34 @@ function instantiate(ctx::Context; manifest::Union{Bool, Nothing}=nothing,
     Operations.build_versions(ctx, union(new_apply, new_git))
 end
 
+function state_dir(ctx::Context = Context(), keys...; julia_version_specific::Bool = true, ABI_specific::Bool = true)
+    h = UInt64(0)
+    for k in keys
+        h = hash(k, h)
+    end
+    if julia_version_specific
+        h = hash(Base.VERSION, h)
+    end
+
+    if ABI_specific
+        # We would perhaps want to integrate this logic into Pkg
+        h = hash(triplet(platform_key_abi()), h)
+    end
+
+    # Convert hash to Pkg "slug"
+    data_slug = slug(UInt32(h & 0xffffffff), 5)
+
+    return joinpath(depots1(), "package_data", data_slug)
+end
 
 @deprecate status(mode::PackageMode) status(mode=mode)
 
-status(; mode=PKGMODE_PROJECT) = status(PackageSpec[]; mode=mode)
-status(pkg::Union{AbstractString,PackageSpec}; mode=PKGMODE_PROJECT) = status([pkg]; mode=mode)
+status(; mode=PKGMODE_PROJECT) = status(Dependency[]; mode=mode)
+status(pkg::Union{AbstractString,D}; mode=PKGMODE_PROJECT) where {D <: Dependency} = status([pkg]; mode=mode)
 status(pkgs::Vector{<:AbstractString}; mode=PKGMODE_PROJECT) =
     status([check_package_name(pkg) for pkg in pkgs]; mode=mode)
-status(pkgs::Vector{PackageSpec}; mode=PKGMODE_PROJECT) = status(Context(), pkgs; mode=mode)
-function status(ctx::Context, pkgs::Vector{PackageSpec}; mode=PKGMODE_PROJECT)
+status(pkgs::Vector{D}; mode=PKGMODE_PROJECT) where {D <: Dependency} = status(Context(), pkgs; mode=mode)
+function status(ctx::Context, pkgs::Vector{D}; mode=PKGMODE_PROJECT) where {D <: Dependency}
     project_resolve!(ctx.env, pkgs)
     project_deps_resolve!(ctx.env, pkgs)
     manifest_resolve!(ctx.env, pkgs)

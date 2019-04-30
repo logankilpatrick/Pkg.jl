@@ -8,8 +8,12 @@ module BinaryProvider
 # `gen_package_cmd()` functions by providing methods to probe the environment
 # and determine the most appropriate platform binaries to call.
 
+export gen_download_cmd, gen_unpack_cmd, gen_package_cmd, gen_list_tarball_cmd,
+       parse_tarball_listing, gen_sh_cmd, parse_7z_list, parse_tar_list,
+       download_verify_unpack, download_verify, unpack
+
 """
-`gen_download_cmd(url::AbstractString, out_path::AbstractString)`
+    gen_download_cmd(url::AbstractString, out_path::AbstractString)
 
 Return a `Cmd` that will download resource located at `url` and store it at
 the location given by `out_path`.
@@ -21,7 +25,7 @@ gen_download_cmd = (url::AbstractString, out_path::AbstractString) ->
     error("Call `probe_platform_engines()` before `gen_download_cmd()`")
 
 """
-`gen_unpack_cmd(tarball_path::AbstractString, out_path::AbstractString)`
+    gen_unpack_cmd(tarball_path::AbstractString, out_path::AbstractString)
 
 Return a `Cmd` that will unpack the given `tarball_path` into the given
 `out_path`.  If `out_path` is not already a directory, it will be created.
@@ -33,7 +37,7 @@ gen_unpack_cmd = (tarball_path::AbstractString, out_path::AbstractString) ->
     error("Call `probe_platform_engines()` before `gen_unpack_cmd()`")
 
 """
-`gen_package_cmd(in_path::AbstractString, tarball_path::AbstractString)`
+    gen_package_cmd(in_path::AbstractString, tarball_path::AbstractString)
 
 Return a `Cmd` that will package up the given `in_path` directory into a
 tarball located at `tarball_path`.
@@ -45,7 +49,7 @@ gen_package_cmd = (in_path::AbstractString, tarball_path::AbstractString) ->
     error("Call `probe_platform_engines()` before `gen_package_cmd()`")
 
 """
-`gen_list_tarball_cmd(tarball_path::AbstractString)`
+    gen_list_tarball_cmd(tarball_path::AbstractString)
 
 Return a `Cmd` that will list the files contained within the tarball located at
 `tarball_path`.  The list will not include directories contained within the
@@ -58,7 +62,7 @@ gen_list_tarball_cmd = (tarball_path::AbstractString) ->
     error("Call `probe_platform_engines()` before `gen_list_tarball_cmd()`")
 
 """
-`parse_tarball_listing(output::AbstractString)`
+    parse_tarball_listing(output::AbstractString)
 
 Parses the result of `gen_list_tarball_cmd()` into something useful.
 
@@ -68,9 +72,22 @@ automatically called upon first import of `BinaryProvider`.
 parse_tarball_listing = (output::AbstractString) ->
     error("Call `probe_platform_engines()` before `parse_tarball_listing()`")
 
+"""
+    gen_sh_cmd(cmd::Cmd)
+
+Runs a command using `sh`.  On Unices, this will default to the first `sh`
+found on the `PATH`, however on Windows if that is not found it will fall back
+to the `sh` provided by the `busybox.exe` shipped with Julia.
+
+This method is initialized by `probe_platform_engines()`, which should be
+automatically called upon first import of `BinaryProvider`.
+"""
+gen_sh_cmd = (cmd::Cmd) ->
+    error("Call `probe_platform_engines()` before `gen_sh_cmd()`")
+
 
 """
-`probe_cmd(cmd::Cmd; verbose::Bool = false)`
+    probe_cmd(cmd::Cmd; verbose::Bool = false)
 
 Returns `true` if the given command executes successfully, `false` otherwise.
 """
@@ -89,16 +106,49 @@ function probe_cmd(cmd::Cmd; verbose::Bool = false)
     end
 end
 
-already_probed = false
+"""
+    probe_symlink_creation(dest::AbstractString)
+
+Probes whether we can create a symlink within the given destination directory,
+to determine whether a particular filesystem is "symlink-unfriendly".
+"""
+function probe_symlink_creation(dest::AbstractString)
+    while !isdir(dest)
+        dest = dirname(dest)
+    end
+
+    # Build arbitrary (non-existent) file path name
+    link_path = joinpath(dest, "binaryprovider_symlink_test")
+    while ispath(link_path)
+        link_path *= "1"
+    end
+
+    try
+        symlink("foo", link_path)
+        return true
+    catch e
+        if isa(e, Base.IOError)
+            return false
+        end
+        rethrow(e)
+    finally
+        rm(link_path; force=true)
+    end
+end
+
+# Global variable that tells us whether tempdir() can have symlinks
+# created within it.
+tempdir_symlink_creation = false
+
 
 """
-`probe_platform_engines!(;verbose::Bool = false)`
+    probe_platform_engines!(;verbose::Bool = false)
 
 Searches the environment for various tools needed to download, unpack, and
 package up binaries.  Searches for a download engine to be used by
 `gen_download_cmd()` and a compression engine to be used by `gen_unpack_cmd()`,
-`gen_package_cmd()`, `gen_list_tarball_cmd()` and `parse_tarball_listing()`.
-Running this function
+`gen_package_cmd()`, `gen_list_tarball_cmd()` and `parse_tarball_listing()`, as
+well as a `sh` execution engine for `gen_sh_cmd()`.  Running this function
 will set the global functions to their appropriate implementations given the
 environment this package is running on.
 
@@ -122,18 +172,26 @@ will be printed and the typical searching will be performed.
 If `verbose` is `true`, print out the various engines as they are searched.
 """
 function probe_platform_engines!(;verbose::Bool = false)
-    global already_probed
     global gen_download_cmd, gen_list_tarball_cmd, gen_package_cmd
-    global gen_unpack_cmd, parse_tarball_listing
-    already_probed && return
+    global gen_unpack_cmd, parse_tarball_listing, gen_sh_cmd
+    global tempdir_symlink_creation
+
+    # First things first, determine whether tempdir() can have symlinks created
+    # within it.  This is important for our copyderef workaround for e.g. SMBFS
+    tempdir_symlink_creation = probe_symlink_creation(tempdir())
+    if verbose
+        @info("Symlinks allowed in $(tempdir()): $(tempdir_symlink_creation)")
+    end
+
+    agent = "BinaryProvider.jl (https://github.com/JuliaPackaging/BinaryProvider.jl)"
     # download_engines is a list of (test_cmd, download_opts_functor)
     # The probulator will check each of them by attempting to run `$test_cmd`,
     # and if that works, will set the global download functions appropriately.
     download_engines = [
-        (`curl --help`, (url, path) -> `curl -C - -\# -f -o $path -L $url`),
-        (`wget --help`, (url, path) -> `wget -c -O $path $url`),
-        (`fetch --help`, (url, path) -> `fetch -f $path $url`),
-        (`busybox wget --help`, (url, path) -> `busybox wget -c -O $path $url`),
+        (`curl --help`, (url, path) -> `curl -H "User-Agent: $agent" -C - -\# -f -o $path -L $url`),
+        (`wget --help`, (url, path) -> `wget --tries=5 -U $agent -c -O $path $url`),
+        (`fetch --help`, (url, path) -> `fetch --user-agent=$agent -f $path $url`),
+        (`busybox wget --help`, (url, path) -> `busybox wget -U $agent -c -O $path $url`),
     ]
 
     # 7z is rather intensely verbose.  We also want to try running not only
@@ -199,10 +257,8 @@ function probe_platform_engines!(;verbose::Bool = false)
                 [System.Net.ServicePointManager]::SecurityProtocol =
                     [System.Net.SecurityProtocolType]::Tls12;
                 \$webclient = (New-Object System.Net.Webclient);
-                \$webclient.UseDefaultCredentials = \$true;
-                \$webclient.Proxy.Credentials = \$webclient.Credentials;
-                \$webclient.Headers.Add("user-agent", \"Pkg.jl (https://github.com/JuliaLang/Pkg.jl)\");
-                \$webclient.DownloadFile(\"$url\", \"$path\")
+                \$webclient.Headers.Add("user-agent", "$agent");
+                \$webclient.DownloadFile("$url", "$path")
                 """
                 replace(webclient_code, "\n" => " ")
                 return `$psh_path -NoProfile -Command "$webclient_code"`
@@ -263,6 +319,7 @@ function probe_platform_engines!(;verbose::Bool = false)
 
     download_found = false
     compression_found = false
+    sh_found = false
 
     if verbose
         @info("Probing for download engine...")
@@ -322,17 +379,22 @@ function probe_platform_engines!(;verbose::Bool = false)
     if !download_found || !compression_found
         error(errmsg)
     end
-    already_probed = true
 end
 
 """
-`parse_7z_list(output::AbstractString)`
+    parse_7z_list(output::AbstractString)
 
 Given the output of `7z l`, parse out the listed filenames.  This funciton used
 by  `list_tarball_files`.
 """
 function parse_7z_list(output::AbstractString)
     lines = [chomp(l) for l in split(output, "\n")]
+
+    # If we didn't get anything, complain immediately
+    if isempty(lines)
+        return []
+    end
+
     # Remove extraneous "\r" for windows platforms
     for idx in 1:length(lines)
         if endswith(lines[idx], '\r')
@@ -340,11 +402,11 @@ function parse_7z_list(output::AbstractString)
         end
     end
 
-    # Find index of " Name". (can't use `findfirst(generator)` until this is
-    # closed: https://github.com/JuliaLang/julia/issues/16884
-    header_row = findall(occursin(" Name", l) && occursin(" Attr", l) for l in lines)[1]
-    name_idx = search(lines[header_row], "Name")[1]
-    attr_idx = search(lines[header_row], "Attr")[1] - 1
+    # Find index of " Name".  Have to `collect()` as `findfirst()` doesn't work with
+    # generators: https://github.com/JuliaLang/julia/issues/16884
+    header_row = findfirst(collect(occursin(" Name", l) && occursin(" Attr", l) for l in lines))
+    name_idx = findfirst("Name", lines[header_row])[1]
+    attr_idx = findfirst("Attr", lines[header_row])[1] - 1
 
     # Filter out only the names of files, ignoring directories
     lines = [l[name_idx:end] for l in lines if length(l) > name_idx && l[attr_idx] != 'D']
@@ -353,7 +415,7 @@ function parse_7z_list(output::AbstractString)
     end
 
     # Extract within the bounding lines of ------------
-    bounds = [i for i in 1:length(lines) if all([c for c in lines[i]] .== '-')]
+    bounds = [i for i in 1:length(lines) if all([c for c in lines[i]] .== Ref('-'))]
     lines = lines[bounds[1]+1:bounds[2]-1]
 
     # Eliminate `./` prefix, if it exists
@@ -367,9 +429,9 @@ function parse_7z_list(output::AbstractString)
 end
 
 """
-`parse_7z_list(output::AbstractString)`
+    parse_tar_list(output::AbstractString)
 
-Given the output of `tar -t`, parse out the listed filenames.  This function
+Given the output of `tar -t`, parse out the listed filenames.  This funciton
 used by `list_tarball_files`.
 """
 function parse_tar_list(output::AbstractString)
@@ -386,6 +448,299 @@ function parse_tar_list(output::AbstractString)
     end
 
     return lines
+end
+
+"""
+    download(url::AbstractString, dest::AbstractString;
+             verbose::Bool = false)
+
+Download file located at `url`, store it at `dest`, continuing if `dest`
+already exists and the server and download engine support it.
+"""
+function download(url::AbstractString, dest::AbstractString;
+                  verbose::Bool = false)
+    download_cmd = gen_download_cmd(url, dest)
+    if verbose
+        @info("Downloading $(url) to $(dest)...")
+    end
+    try
+        run(download_cmd, (devnull, devnull, devnull))
+    catch e
+        if isa(e, InterruptException)
+            rethrow()
+        end
+        error("Could not download $(url) to $(dest):\n$(e)")
+    end
+end
+
+"""
+    download_verify(url::AbstractString, hash::AbstractString,
+                    dest::AbstractString; verbose::Bool = false,
+                    force::Bool = false, quiet_download::Bool = false)
+
+Download file located at `url`, verify it matches the given `hash`, and throw
+an error if anything goes wrong.  If `dest` already exists, just verify it. If
+`force` is set to `true`, overwrite the given file if it exists but does not
+match the given `hash`.
+
+This method returns `true` if the file was downloaded successfully, `false`
+if an existing file was removed due to the use of `force`, and throws an error
+if `force` is not set and the already-existent file fails verification, or if
+`force` is set, verification fails, and then verification fails again after
+redownloading the file.
+
+If `quiet_download` is set to `false` (the default), this method will print to
+stdout when downloading a new file.  If it is set to `true` (and `verbose` is
+set to `false`) the downloading process will be completely silent.  If
+`verbose` is set to `true`, messages about integrity verification will be
+printed in addition to messages regarding downloading.
+"""
+function download_verify(url::AbstractString, hash::AbstractString,
+                         dest::AbstractString; verbose::Bool = false,
+                         force::Bool = false, quiet_download::Bool = false)
+    # Whether the file existed in the first place
+    file_existed = false
+
+    if isfile(dest)
+        file_existed = true
+        if verbose
+            info_onchange(
+                "Destination file $(dest) already exists, verifying...",
+                "download_verify_$(dest)",
+                @__LINE__,
+            )
+        end
+
+        # verify download, if it passes, return happy.  If it fails, (and
+        # `force` is `true`, re-download!)
+        try
+            verify(dest, hash; verbose=verbose)
+            return true
+        catch e
+            if isa(e, InterruptException)
+                rethrow()
+            end
+            if !force
+                rethrow()
+            end
+            if verbose
+                info_onchange(
+                    "Verification failed, re-downloading...",
+                    "download_verify_$(dest)",
+                    @__LINE__,
+                )
+            end
+        end
+    end
+
+    # Make sure the containing folder exists
+    mkpath(dirname(dest))
+
+    try
+        # Download the file, optionally continuing
+        download(url, dest; verbose=verbose || !quiet_download)
+
+        verify(dest, hash; verbose=verbose)
+    catch e
+        if isa(e, InterruptException)
+            rethrow()
+        end
+        # If the file already existed, it's possible the initially downloaded chunk
+        # was bad.  If verification fails after downloading, auto-delete the file
+        # and start over from scratch.
+        if file_existed
+            if verbose
+                @info("Continued download didn't work, restarting from scratch")
+            end
+            rm(dest; force=true)
+
+            # Download and verify from scratch
+            download(url, dest; verbose=verbose || !quiet_download)
+            verify(dest, hash; verbose=verbose)
+        else
+            # If it didn't verify properly and we didn't resume, something is
+            # very wrong and we must complain mightily.
+            rethrow()
+        end
+    end
+
+    # If the file previously existed, this means we removed it (due to `force`)
+    # and redownloaded, so return `false`.  If it didn't exist, then this means
+    # that we successfully downloaded it, so return `true`.
+    return !file_existed
+end
+
+
+"""
+    unpack(tarball_path::AbstractString, dest::AbstractString;
+           verbose::Bool = false)
+
+Unpack tarball located at file `tarball_path` into directory `dest`.
+"""
+function unpack(tarball_path::AbstractString, dest::AbstractString;
+                verbose::Bool = false)
+    # The user can force usage of our dereferencing workaround for filesystems
+    # that don't support symlinks, but it is also autodetected.
+    copyderef = get(ENV, "BINARYPROVIDER_COPYDEREF", "") == "true" ||
+                (tempdir_symlink_creation && !probe_symlink_creation(dest))
+
+    # If we should "copyderef" what we do is to unpack into a temporary directory,
+    # then copy without preserving symlinks into the destination directory.  This
+    # is to work around filesystems that are mounted (such as SMBFS filesystems)
+    # that do not support symlinks.  Note that this does not work if you are on
+    # a system that completely disallows symlinks (Even within temporary
+    # directories) such as Windows XP/7.
+    true_dest = dest
+    if copyderef
+        dest = mktempdir()
+    end
+
+    # unpack into dest
+    mkpath(dest)
+    cmd = gen_unpack_cmd(tarball_path, dest)
+    try
+        run(cmd, (devnull, devnull, devnull))
+    catch e
+        if isa(e, InterruptException)
+            rethrow()
+        end
+        error("Could not unpack $(tarball_path) into $(dest)")
+    end
+
+    if copyderef
+        # We would like to use `cptree(; follow_symlinks=false)` here, but it
+        # freaks out if there are any broken symlinks, which is too finnicky
+        # for our use cases.  For us, we will just print a warning and continue.
+        function cptry_harder(src, dst)
+            mkpath(dst)
+            for name in readdir(src)
+                srcname = joinpath(src, name)
+                dstname = joinpath(dst, name)
+                if isdir(srcname)
+                    cptry_harder(srcname, dstname)
+                else
+                    try
+                        Base.Filesystem.sendfile(srcname, dstname)
+                    catch e
+                        if isa(e, Base.IOError)
+                            if verbose
+                                @warn("Could not copy $(srcname) to $(dstname)")
+                            end
+                        else
+                            rethrow(e)
+                        end
+                    end
+                end
+            end
+        end
+        cptry_harder(dest, true_dest)
+        rm(dest; recursive=true, force=true)
+    end
+end
+
+
+"""
+    download_verify_unpack(url::AbstractString, hash::AbstractString,
+                           dest::AbstractString; tarball_path = nothing,
+                           verbose::Bool = false, ignore_existence::Bool = false,
+                           force::Bool = false)
+
+Helper method to download tarball located at `url`, verify it matches the
+given `hash`, then unpack it into folder `dest`.  In general, the method
+`install()` should be used to download and install tarballs into a `Prefix`;
+this method should only be used if the extra functionality of `install()` is
+undesired.
+
+If `tarball_path` is specified, the given `url` will be downloaded to
+`tarball_path`, and it will not be removed after downloading and verification
+is complete.  If it is not specified, the tarball will be downloaded to a
+temporary location, and removed after verification is complete.
+
+If `force` is specified, a verification failure will cause `tarball_path` to be
+deleted (if it exists), the `dest` folder to be removed (if it exists) and the
+tarball to be redownloaded and reverified.  If the verification check is failed
+a second time, an exception is raised.  If `force` is not specified, a
+verification failure will result in an immediate raised exception.
+
+If `ignore_existence` is set, the tarball is unpacked even if the destination
+directory already exists.
+
+Returns `true` if a tarball was actually unpacked, `false` if nothing was
+changed in the destination prefix.
+"""
+function download_verify_unpack(url::AbstractString,
+                                hash::AbstractString,
+                                dest::AbstractString;
+                                tarball_path = nothing,
+                                ignore_existence::Bool = false,
+                                force::Bool = false,
+                                verbose::Bool = false)
+    # First, determine whether we should keep this tarball around
+    remove_tarball = false
+    if tarball_path === nothing
+        remove_tarball = true
+
+        function url_ext(url)
+            url = basename(url)
+
+            # Chop off urlparams
+            qidx = findfirst(isequal('?'), url)
+            if qidx !== nothing
+                url = url[1:qidx]
+            end
+
+            # Try to detect extension
+            dot_idx = findlast(isequal('.'), url)
+            if dot_idx === nothing
+                return nothing
+            end
+
+            return url[dot_idx+1:end]
+        end
+
+        # If extension of url contains a recognized extension, use it, otherwise use ".gz"
+        ext = url_ext(url)
+        if !(ext in ["tar", "gz", "tgz", "bz2", "xz"])
+            ext = "gz"
+        end
+
+        tarball_path = "$(tempname())-download.$(ext)"
+    end
+
+    # Download the tarball; if it already existed and we needed to remove it
+    # then we should remove the unpacked path as well
+    should_delete = !download_verify(url, hash, tarball_path;
+                                     force=force, verbose=verbose)
+    if should_delete
+        if verbose
+            @info("Removing dest directory $(dest) as source tarball changed")
+        end
+        rm(dest; recursive=true, force=true)
+    end
+
+    # If the destination path already exists, don't bother to unpack
+    if !ignore_existence && isdir(dest)
+        if verbose
+            @info("Destination directory $(dest) already exists, returning")
+        end
+
+        # Signify that we didn't do any unpacking
+        return false
+    end
+
+    try
+        if verbose
+            @info("Unpacking $(tarball_path) into $(dest)...")
+        end
+        unpack(tarball_path, dest; verbose=verbose)
+    finally
+        if remove_tarball
+            rm(tarball_path)
+        end
+    end
+
+    # Signify that we did some unpacking!
+    return true
 end
 
 end

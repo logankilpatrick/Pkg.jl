@@ -3,7 +3,7 @@ function _update_manifest(ctx::Context, pkg::PackageSpec, hash::Union{SHA1, Noth
     uuid, name, version, path, special_action, repo = pkg.uuid, pkg.name, pkg.version, pkg.path, pkg.special_action, pkg.repo
     hash === nothing && @assert (path != nothing || pkg.uuid in keys(ctx.stdlibs) || pkg.repo.url != nothing)
     # TODO I think ^ assertion is wrong, add-repo should have a hash
-    entry = get!(env.manifest, uuid, Types.PackageEntry())
+    entry = get!(env.manifest, uuid, Types.ManifestEntry())
     entry.name = name
     is_stdlib = uuid in keys(ctx.stdlibs)
     if !is_stdlib
@@ -473,7 +473,7 @@ function with_dependencies_loadable_at_toplevel(f, mainctx::Context, pkg::Packag
         foreach(k->setfield!(localctx.env.project, k, nothing), (:name, :uuid, :version))
         localctx.env.pkg = nothing
         localctx.env.project.deps[pkg.name] = pkg.uuid
-        localctx.env.manifest[pkg.uuid] = Types.PackageEntry(
+        localctx.env.manifest[pkg.uuid] = Types.ManifestEntry(
             name=pkg.name,
             deps=get_deps(mainctx, target),
             path=dirname(localctx.env.project_file),

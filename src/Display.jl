@@ -7,7 +7,7 @@ import LibGit2
 
 using ..Types
 
-const PackageEntry = Types.PackageEntry
+const ManifestEntry = Types.ManifestEntry
 
 const colors = Dict(
     ' ' => :white,
@@ -31,8 +31,8 @@ function git_file_stream(repo::LibGit2.GitRepo, spec::String; fakeit::Bool=false
     return iob
 end
 
-function status(ctx::Context, pkgs::Vector{PackageSpec}=PackageSpec[];
-                mode::PackageMode=PKGMODE_PROJECT, use_as_api=false)
+function status(ctx::Context, pkgs::Vector{D}=Dependency[];
+                mode::PackageMode=PKGMODE_PROJECT, use_as_api=false) where {D <: Dependency}
     env = ctx.env
     project₀ = project₁ = env.project
     manifest₀ = manifest₁ = env.manifest
@@ -228,7 +228,7 @@ end
 # TODO: Use the Context stream
 print_diff(ctx::Context, diff::Vector{DiffEntry}, status=false) = print_diff(stdout, ctx, diff, status)
 
-function name_ver_info(entry::PackageEntry)
+function name_ver_info(entry::ManifestEntry)
     entry.name, VerInfo(
         entry.tree_hash,
         entry.path,

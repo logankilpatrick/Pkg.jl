@@ -9,8 +9,10 @@ import LibGit2
 import REPL
 using REPL.TerminalMenus
 using ..Types, ..GraphType, ..Resolve, ..Pkg2, ..BinaryProvider, ..GitTools, ..Display
-import ..depots, ..depots1, ..devdir, ..Types.uuid_julia, ..Types.PackageEntry
-import ..Pkg
+import ..depots, ..depots1, ..devdir, ..Types.uuid_julia, ..Types.ManifestEntry
+import ..Pkg, ..triplet, ..Platform, ..platform_key_abi, ..choose_download
+import ..BinaryProvider: download_verify_unpack, download, unpack
+using SHA
 
 
 #########
@@ -28,37 +30,98 @@ function find_installed(name::String, uuid::UUID, sha1::SHA1)
     return abspath(depots1(), "packages", name, slug_default)
 end
 
-# more accurate name is `should_be_tracking_registered_version`
-# the only way to know for sure is to key into the registries
-tracking_registered_version(pkg) =
-    !is_stdlib(pkg.uuid) && pkg.path === nothing && pkg.repo.url === nothing
-
-function source_path(pkg::PackageSpec)
-    return is_stdlib(pkg.uuid)    ? Types.stdlib_path(pkg.name) :
-        pkg.path      !== nothing ? pkg.path :
-        pkg.repo.url  !== nothing ? find_installed(pkg.name, pkg.uuid, pkg.tree_hash) :
-        pkg.tree_hash !== nothing ? find_installed(pkg.name, pkg.uuid, pkg.tree_hash) :
-        nothing
+function find_installed_artifact(name::String, uuid::UUID, hash)
+    # Turn our tarball hash (which is a sha256 hash) into a sha1 hash
+    slug = Base.version_slug(uuid, SHA1(sha1(hash)))
+    for depot in depots()
+        path = abspath(depot, "packages", name, slug)
+        ispath(path) && return path
+    end
+    return abspath(depots1(), "packages", name, slug)
 end
 
-is_dep(env::EnvCache, pkg::PackageSpec) =
+# more accurate name is `should_be_tracking_registered_version`
+# the only way to know for sure is to key into the registries
+tracking_registered_version(pkg::PackageSpec) =
+    !is_stdlib(pkg.uuid) && pkg.path === nothing && pkg.repo.url === nothing
+tracking_registered_version(pkg::ArtifactSpec) = !is_stdlib(pkg.uuid) && pkg.path === nothing
+tracking_registered_version(pkg::Dependency) = true
+
+function source_path(ctx::Context, pkg::PackageSpec)
+    if is_stdlib(pkg.uuid)
+        return Types.stdlib_path(pkg.name)
+    end
+
+    if pkg.path !== nothing
+        return pkg.path
+    end
+
+    if pkg.repo.url !== nothing || pkg.tree_hash !== nothing
+        return find_installed(pkg.name, pkg.uuid, pkg.tree_hash)
+    end
+    return nothing
+end
+
+function source_path(ctx::Context, pkg::ArtifactSpec; platform::Platform = platform_key_abi())
+    if is_stdlib(pkg.uuid)
+        return Types.stdlib_path(pkg.name)
+    end
+
+    if pkg.path !== nothing
+        return pkg.path
+    end
+
+    # Look up a keyed platform_hashes from bundled Versions.toml
+    download_infos = load_platform_hashes(ctx, pkg; platform=platform)
+
+    if download_infos != nothing && !isempty(download_infos)
+        # Look for any of the downloaded hashes:
+        # for url, hash in download_infos
+        return find_installed_artifact(pkg.name, pkg.uuid, first(download_infos)["hash"])
+    end
+
+    return nothing
+end
+
+is_dep(env::EnvCache, pkg::Dependency) =
     any(uuid -> uuid == pkg.uuid, [uuid for (name, uuid) in env.project.deps])
 
-function load_direct_deps!(ctx::Context, pkgs::Vector{PackageSpec}; version::Bool=true)
+function load_direct_deps!(ctx::Context, pkgs::Vector{D}; version::Bool=true) where {D <: Dependency}
+    # Widen pkgs type to accept all kinds of dependencies
+    pkgs = Dependency[pkg for pkg in pkgs]
+
     # load rest of deps normally
     for (name::String, uuid::UUID) in ctx.env.project.deps
         pkgs[uuid] === nothing || continue # dont duplicate packages
         entry = manifest_info(ctx.env, uuid)
-        push!(pkgs, entry === nothing ?
-              PackageSpec(;uuid=uuid, name=name) :
-              PackageSpec(;
-                uuid      = uuid,
-                name      = name,
-                path      = entry.path,
-                repo      = entry.repo,
-                tree_hash = entry.tree_hash,
-                pinned    = entry.pinned,
-                version   = version ? something(entry.version, VersionSpec()) : VersionSpec()))
+
+        new_pkg = GenericDependency(;uuid=uuid, name=name)
+        if entry != nothing
+            # If entry.platform is filled in, that means this manifest entry represents an Artifact
+            if entry.platform != nothing
+                new_pkg = ArtifactSpec(;
+                    uuid      = uuid,
+                    name      = name,
+                    path      = entry.path,
+                    repo      = entry.repo,
+                    pinned    = entry.pinned,
+                    platform  = entry.platform,
+                    version   = version ? something(entry.version, VersionSpec()) : VersionSpec()
+                )
+            else
+                new_pkg = PackageSpec(;
+                    uuid      = uuid,
+                    name      = name,
+                    path      = entry.path,
+                    repo      = entry.repo,
+                    tree_hash = entry.tree_hash,
+                    pinned    = entry.pinned,
+                    version   = version ? something(entry.version, VersionSpec()) : VersionSpec()
+                )
+            end
+        end
+
+        push!(pkgs, new_pkg)
     end
 end
 
@@ -71,13 +134,12 @@ function load_all_deps!(ctx::Context, pkgs::Vector{PackageSpec}; version::Bool=t
     load_direct_deps!(ctx, pkgs; version=version)
 end
 
-function update_manifest!(ctx::Context, pkgs::Vector{PackageSpec})
+function update_manifest!(ctx::Context, pkgs::Vector{<:Dependency})
     manifest = ctx.env.manifest
     empty!(manifest)
     #find_registered!(ctx.env, [pkg.uuid for pkg in pkgs]) # Is this necessary? its for `load_deps`...
     for pkg in pkgs
-        entry = PackageEntry(;name = pkg.name, version = pkg.version, pinned = pkg.pinned,
-                             tree_hash = pkg.tree_hash, path = pkg.path, repo = pkg.repo)
+        entry = ManifestEntry(pkg)
         is_stdlib(pkg.uuid) && (entry.version = nothing) # do not set version for stdlibs
         entry.deps = load_deps(ctx, pkg)
         ctx.env.manifest[pkg.uuid] = entry
@@ -131,6 +193,11 @@ end
 
 function load_versions(path::String; include_yanked = false)
     toml = parse_toml(path, "Versions.toml"; fakeit=true)
+    return [VersionNumber(ver) for (ver, info) in toml if !get(info, "yanked", false) || include_yanked]    
+end
+
+function load_versions_with_hashes(path::String; include_yanked = false)
+    toml = parse_toml(path, "Versions.toml"; fakeit=true)
     return Dict{VersionNumber, SHA1}(
         VersionNumber(ver) => SHA1(info["git-tree-sha1"]) for (ver, info) in toml
             if !get(info, "yanked", false) || include_yanked)
@@ -139,7 +206,7 @@ end
 function load_tree_hash(ctx::Context, pkg::PackageSpec)
     hashes = SHA1[]
     for path in registered_paths(ctx.env, pkg.uuid)
-        vers = load_versions(path; include_yanked = true)
+        vers = load_versions_with_hashes(path; include_yanked = true)
         hash = get(vers, pkg.version, nothing)
         hash !== nothing && push!(hashes, hash)
     end
@@ -148,11 +215,44 @@ function load_tree_hash(ctx::Context, pkg::PackageSpec)
     return hashes[1]
 end
 
-function load_tree_hashes!(ctx::Context, pkgs::Vector{PackageSpec})
+function load_tree_hashes!(ctx::Context, pkgs::Vector{<:Dependency})
     for pkg in pkgs
+        isa(pkg, PackageSpec) || continue
         tracking_registered_version(pkg) || continue
         pkg.tree_hash = load_tree_hash(ctx, pkg)
     end
+end
+
+function load_platform_hashes(ctx::Context, pkg::ArtifactSpec; platform::Platform = platform_key_abi())
+    # Assert that this version is concrete
+    @assert pkg.version != empty_versionspec
+
+    # Collect dictionaries containing information like url, hash, etc... for this artifact.
+    download_infos = Dict[]
+
+    for path in registered_paths(ctx.env, pkg.uuid)
+        toml = parse_toml(path, "Versions.toml"; fakeit=true)
+        version_entry = get(toml, string(pkg.version), nothing)
+        if version_entry === nothing
+            continue
+        end
+
+        platform_hashes = get(version_entry, "artifacts", Dict())
+        info = choose_download(platform_hashes, platform)
+        if info != nothing
+            push!(download_infos, info)
+        end
+    end
+
+    if isempty(download_infos)
+        return nothing
+    end
+
+    # Assert that we allow registries to mirror dependencies, but the hashes must match
+    if length(unique(info["hash"] for info in download_infos)) != 1
+        pkgerror("hash mismatch")
+    end
+    return download_infos
 end
 
 #######################################
@@ -163,7 +263,7 @@ include("backwards_compatible_isolation.jl")
 function set_maximum_version_registry!(env::EnvCache, pkg::PackageSpec)
     pkgversions = Set{VersionNumber}()
     for path in registered_paths(env, pkg.uuid)
-        pathvers = keys(load_versions(path; include_yanked = false))
+        pathvers = load_versions(path; include_yanked = false)
         union!(pkgversions, pathvers)
     end
     if length(pkgversions) == 0
@@ -174,7 +274,7 @@ function set_maximum_version_registry!(env::EnvCache, pkg::PackageSpec)
     end
 end
 
-function load_deps(ctx::Context, pkg::PackageSpec)::Dict{String,UUID}
+function load_deps(ctx::Context, pkg::Dependency)::Dict{String,UUID}
     if tracking_registered_version(pkg)
         for path in registered_paths(ctx.env, pkg.uuid)
             data = load_package_data(UUID, joinpath(path, "Deps.toml"), pkg.version)
@@ -182,7 +282,7 @@ function load_deps(ctx::Context, pkg::PackageSpec)::Dict{String,UUID}
         end
         return Dict{String,UUID}()
     else
-        path = project_rel_path(ctx, source_path(pkg))
+        path = project_rel_path(ctx, source_path(ctx, pkg))
         project_file = projectfile_path(path; strict=true)
         if project_file !== nothing
             project = read_project(project_file)
@@ -239,9 +339,11 @@ function collect_project!(ctx::Context, pkg::PackageSpec, path::String, fix_deps
 end
 
 is_fixed(pkg::PackageSpec) = pkg.path !== nothing || pkg.repo.url !== nothing
+is_fixed(pkg::ArtifactSpec) = pkg.path !== nothing
+is_fixed(pkg::Dependency) = false
 
-function collect_fixed!(ctx::Context, pkgs::Vector{PackageSpec}, names::Dict{UUID, String})
-    fix_deps_map = Dict{UUID,Vector{PackageSpec}}()
+function collect_fixed!(ctx::Context, pkgs::Vector{<:Dependency}, names::Dict{UUID, String})
+    fix_deps_map = Dict{UUID,Vector{Dependency}}()
     for pkg in pkgs
         path = project_rel_path(ctx, source_path(pkg))
         if !isdir(path)
@@ -273,7 +375,7 @@ end
 # sets version to a VersionNumber
 # adds any other packages which may be in the dependency graph
 # all versioned packges should have a `tree_hash`
-function resolve_versions!(ctx::Context, pkgs::Vector{PackageSpec})
+function resolve_versions!(ctx::Context, pkgs::Vector{Dependency})
     printpkgstyle(ctx, :Resolving, "package versions...")
     # compatibility
     proj_compat = Types.project_compatibility(ctx, "julia")
@@ -281,6 +383,8 @@ function resolve_versions!(ctx::Context, pkgs::Vector{PackageSpec})
     if isempty(v)
         @warn "julia version requirement for project not satisfied" _module=nothing _file=nothing
     end
+
+    @show pkgs
 
     # anything not mentioned is fixed
     names = Dict{UUID, String}(uuid => stdlib for (uuid, stdlib) in ctx.stdlibs)
@@ -317,16 +421,34 @@ function resolve_versions!(ctx::Context, pkgs::Vector{PackageSpec})
     simplify_graph!(graph)
     vers = resolve(graph)
 
+    # We need to hit the filesystem to see if things are artifacts or packages
+    is_artifact(uuid) = any(isfile(joinpath(p, "Artifact.toml")) for p in registered_paths(ctx.env, uuid))
+
     find_registered!(ctx.env, collect(keys(vers)))
     # update vector of package versions
     for (uuid, ver) in vers
-        pkg = pkgs[uuid]
-        if pkg !== nothing
+        idx = findfirst(pkg -> pkg.uuid == uuid, pkgs)
+        if idx !== nothing
             # Fixed packages are not returned by resolve (they already have their version set)
-            pkg.version = vers[pkg.uuid]
-        else
+            pkgs[idx].version = vers[uuid]
+        end
+
+        # If the `pkg` was `nothing` or it is still a `GenericDependency`, then collapse it
+        # down into either an ArtifactSpec or PackageSpec by hitting the filesystem and looking
+        # for Artifact.toml.  We don't want generic dependencies after a resolve finishes.
+        if idx === nothing || isa(pkgs[idx], GenericDependency)
             name = (uuid in keys(ctx.stdlibs)) ? ctx.stdlibs[uuid] : registered_name(ctx.env, uuid)
-            push!(pkgs, PackageSpec(;name=name, uuid=uuid, version=ver))
+            pkg_type = is_artifact(uuid) ? ArtifactSpec : PackageSpec
+            new_pkg = pkg_type(;name=name, uuid=uuid, version=ver)
+
+            # If this was a new package that `resolve!()` "discovered", then push it onto the end.
+            # Otherwise, this was a generic dependency that survived this far and we're concretizing
+            # it here, so replace the generic dependency with this new one that has the proper type.
+            if idx === nothing
+                push!(pkgs, new_pkg)
+            else
+                pkgs[idx] = new_pkg
+            end
         end
     end
     load_tree_hashes!(ctx, pkgs)
@@ -390,8 +512,7 @@ function deps_graph(ctx::Context, uuid_to_name::Dict{UUID,String}, reqs::Require
                 end
             else
                 for path in registered_paths(ctx.env, uuid)
-                    version_info = load_versions(path; include_yanked = false)
-                    versions = sort!(collect(keys(version_info)))
+                    versions = sort!(load_versions(path; include_yanked = false))
                     deps_data = load_package_data_raw(UUID, joinpath(path, "Deps.toml"))
                     compat_data = load_package_data_raw(VersionSpec, joinpath(path, "Compat.toml"))
 
@@ -431,19 +552,39 @@ function deps_graph(ctx::Context, uuid_to_name::Dict{UUID,String}, reqs::Require
     return Graph(all_versions, all_deps, all_compat, uuid_to_name, reqs, fixed, #=verbose=# ctx.graph_verbose)
 end
 
-function load_urls(ctx::Context, pkgs::Vector{PackageSpec})
+function load_urls(ctx::Context, pkgs::Vector{<:Dependency})
     urls = Dict{UUID,Vector{String}}()
     for pkg in pkgs
-        uuid = pkg.uuid
-        ver = pkg.version::VersionNumber
-        urls[uuid] = String[]
-        for path in registered_paths(ctx.env, uuid)
-            info = parse_toml(path, "Package.toml")
-            repo = info["repo"]
-            repo in urls[uuid] || push!(urls[uuid], repo)
-        end
+        urls[pkg.uuid] = load_url(ctx, pkg)
     end
     foreach(sort!, values(urls))
+    return urls
+end
+
+function load_url(ctx::Context, pkg::PackageSpec)
+    urls = String[]
+    for path in registered_paths(ctx.env, uuid = pkg.uuid)
+        info = parse_toml(path, "Package.toml")
+        url = info["repo"]
+        if !(url in urls)
+            push!(urls, url)
+        end
+    end
+    
+    return urls
+end
+
+function load_url(ctx::Context, pkg::ArtifactSpec; platform::Platform = platform_key_abi())
+    urls = String[]
+    for path in registered_paths(ctx.env, pkg.uuid)
+        vers_dict = parse_toml(path, "Versions.toml")
+        platform_hashes = vers_dict[string(pkg.version)]["artifacts"]
+        info = choose_download(platform_hashes, platform)
+        if info != nothing && !(info["url"] in urls)
+            push!(urls, info["url"])
+        end
+    end
+    
     return urls
 end
 
@@ -457,44 +598,68 @@ function get_archive_url_for_version(url::String, ref)
     return nothing
 end
 
+"""
+Installation routine for Artifacts
+"""
+function install_archive(
+    pkg::ArtifactSpec,
+    hash::String,
+    urls::Vector{String},
+    version_path::String;
+    verbose::Bool = false
+)::Bool
+    for url in urls
+        try
+            download_verify_unpack(url, hash, version_path;
+                                   force = true, ignore_existence = true, verbose=verbose)
+        catch e
+            if isa(e, InterruptException)
+                rethrow()
+            end
+            continue
+        end
+        return true
+    end
+    return false
+end
+
 # Returns if archive successfully installed
 function install_archive(
-    urls::Vector{String},
+    pkg::PackageSpec,
     hash::SHA1,
-    version_path::String
+    urls::Vector{String},
+    version_path::String;
+    verbose::Bool = false,
 )::Bool
     for url in urls
         archive_url = get_archive_url_for_version(url, hash)
-        archive_url !== nothing || continue
-        path = tempname() * randstring(6) * ".tar.gz"
-        url_success = true
-        cmd = BinaryProvider.gen_download_cmd(archive_url, path);
+        if archive_url === nothing
+            continue
+        end
+        tarball_path = tempname() * randstring(6) * ".tar.gz"
+
         try
-            run(cmd, (devnull, devnull, devnull))
+            download(archive_url, tarball_path; verbose=verbose)
         catch e
             e isa InterruptException && rethrow()
-            url_success = false
+            continue
         end
-        url_success || continue
+
         dir = joinpath(tempdir(), randstring(12))
-        mkpath(dir)
-        cmd = BinaryProvider.gen_unpack_cmd(path, dir);
-        # Might fail to extract an archive (Pkg#190)
         try
-            run(cmd, (devnull, devnull, devnull))
+            unpack(tarball_path, dir; verbose=verbose)
         catch e
             e isa InterruptException && rethrow()
-            @warn "failed to extract archive downloaded from $(archive_url)"
-            url_success = false
+            @warn("failed to extract archive downloaded from $(archive_url)")
+            continue
         end
-        url_success || continue
         dirs = readdir(dir)
         # 7z on Win might create this spurious file
         filter!(x -> x != "pax_global_header", dirs)
         @assert length(dirs) == 1
         !isdir(version_path) && mkpath(version_path)
         mv(joinpath(dir, dirs[1]), version_path; force=true)
-        Base.rm(path; force = true)
+        Base.rm(tarball_path; force = true)
         Base.rm(dir; force = true)
         return true
     end
@@ -557,20 +722,20 @@ function install_git(
 end
 
 # install & update manifest
-function download_source(ctx::Context, pkgs::Vector{PackageSpec}; readonly=true)
+function download_source(ctx::Context, pkgs::Vector{<:Dependency}; readonly=true)
     pkgs = filter(tracking_registered_version, pkgs)
     urls = load_urls(ctx, pkgs)
     return download_source(ctx, pkgs, urls; readonly=readonly)
 end
 
-function download_source(ctx::Context, pkgs::Vector{PackageSpec},
+function download_source(ctx::Context, pkgs::Vector{<:Dependency},
                         urls::Dict{UUID, Vector{String}}; readonly=true)
     BinaryProvider.probe_platform_engines!()
     new_versions = UUID[]
 
-    pkgs_to_install = Tuple{PackageSpec, String}[]
+    pkgs_to_install = Tuple{Dependency, String}[]
     for pkg in pkgs
-        path = source_path(pkg)
+        path = source_path(ctx, pkg)
         ispath(path) && continue
         push!(pkgs_to_install, (pkg, path))
         push!(new_versions, pkg.uuid)
@@ -601,12 +766,16 @@ function download_source(ctx::Context, pkgs::Vector{PackageSpec},
                     put!(results, (pkg, false, path))
                     continue
                 end
+
+                pkg_hash(pkg::PackageSpec) = pkg.tree_hash
+                pkg_hash(pkg::ArtifactSpec) = first(load_platform_hashes(ctx, pkg))["hash"]
+
                 try
-                    success = install_archive(urls[pkg.uuid], pkg.tree_hash, path)
+                    success = install_archive(pkg, pkg_hash(pkg), urls[pkg.uuid], path)
                     if success && readonly
                         set_readonly(path) # In add mode, files should be read-only
                     end
-                    if ctx.use_only_tarballs_for_downloads && !success
+                    if (ctx.use_only_tarballs_for_downloads || pkg isa ArtifactSpec) && !success
                         pkgerror("failed to get tarball from $(urls[pkg.uuid])")
                     end
                     put!(results, (pkg, success, path))
@@ -617,7 +786,7 @@ function download_source(ctx::Context, pkgs::Vector{PackageSpec},
         end
     end
 
-    missed_packages = Tuple{PackageSpec, String}[]
+    missed_packages = Tuple{Dependency, String}[]
     for i in 1:length(pkgs_to_install)
         pkg, exc_or_success, bt_or_path = take!(results)
         exc_or_success isa Exception && pkgerror("Error when installing package $(pkg.name):\n",
@@ -627,6 +796,11 @@ function download_source(ctx::Context, pkgs::Vector{PackageSpec},
             vstr = pkg.version != nothing ? "v$(pkg.version)" : "[$h]"
             printpkgstyle(ctx, :Installed, string(rpad(pkg.name * " ", max_name + 2, "─"), " ", vstr))
         else
+            # Can't use LibGit2 on an Artifact
+            if pkg isa ArtifactSpec
+                pkgerror("Error when installing package $(pkg.name)")
+            end
+
             push!(missed_packages, (pkg, path))
         end
     end
@@ -893,13 +1067,13 @@ function rm(ctx::Context, pkgs::Vector{PackageSpec})
     write_env(ctx)
 end
 
-update_package_add(pkg::PackageSpec, ::Nothing, is_dep::Bool) = pkg
-function update_package_add(pkg::PackageSpec, entry::PackageEntry, is_dep::Bool)
+update_package_add(pkg::Dependency, ::Nothing, is_dep::Bool) = pkg
+function update_package_add(pkg::Dependency, entry::ManifestEntry, is_dep::Bool)
     if entry.pinned
         pkg.version == VersionSpec() ||
             @warn "`$(pkg.name)` is pinned at `v$(entry.version)`. Maintaining pinned version."
         return PackageSpec(; uuid=pkg.uuid, name=pkg.name, pinned=true,
-                           version=entry.version, tree_hash=entry.tree_hash)
+                           version=entry.version)
     end
     if entry.path !== nothing || entry.repo.url !== nothing || pkg.repo.url !== nothing
         return pkg # overwrite everything, nothing to copy over
@@ -909,14 +1083,13 @@ function update_package_add(pkg::PackageSpec, entry::PackageEntry, is_dep::Bool)
     elseif is_dep && ((isa(pkg.version, VersionNumber) && entry.version == pkg.version) ||
                       (!isa(pkg.version, VersionNumber) && entry.version ∈ pkg.version))
         # leave the package as is at the installed version
-        return PackageSpec(; uuid=pkg.uuid, name=pkg.name, version=entry.version,
-                           tree_hash=entry.tree_hash)
+        return PackageSpec(; uuid=pkg.uuid, name=pkg.name, version=entry.version)
     end
     # adding a new version not compatible with the old version, so we just overwrite
     return pkg
 end
 
-function check_registered(ctx::Context, pkgs::Vector{PackageSpec})
+function check_registered(ctx::Context, pkgs::Vector{<:Dependency})
     pkgs = filter(tracking_registered_version, pkgs)
     find_registered!(ctx.env, UUID[pkg.uuid for pkg in pkgs])
     for pkg in pkgs
@@ -926,7 +1099,7 @@ function check_registered(ctx::Context, pkgs::Vector{PackageSpec})
 end
 
 # Check if the package can be added without colliding/overwriting things
-function assert_can_add(ctx::Context, pkgs::Vector{PackageSpec})
+function assert_can_add(ctx::Context, pkgs::Vector{<:Dependency})
     for pkg in pkgs
         @assert pkg.name !== nothing && pkg.uuid !== nothing
         # package with the same name exist in the project: assert that they have the same uuid
@@ -948,7 +1121,11 @@ function assert_can_add(ctx::Context, pkgs::Vector{PackageSpec})
     end
 end
 
-function add(ctx::Context, pkgs::Vector{PackageSpec}, new_git=UUID[])
+function add(ctx::Context, pkgs::Vector{<:Dependency}, new_git=UUID[])
+    # We may mutate `pkgs`, including changing the types within it,
+    # so explicitly widen the container type
+    pkgs = Dependency[pkg for pkg in pkgs]
+
     assert_can_add(ctx, pkgs)
     # load manifest data
     for (i, pkg) in pairs(pkgs)
@@ -993,7 +1170,7 @@ end
 # load version constraint
 # if version isa VersionNumber -> set tree_hash too
 up_load_versions!(pkg::PackageSpec, ::Nothing, level::UpgradeLevel) = false
-function up_load_versions!(pkg::PackageSpec, entry::PackageEntry, level::UpgradeLevel)
+function up_load_versions!(pkg::PackageSpec, entry::ManifestEntry, level::UpgradeLevel)
     entry.version !== nothing || return false # no version to set
     if entry.repo.url !== nothing # repo packages have a version but are treated special
         pkg.repo = entry.repo
@@ -1023,7 +1200,7 @@ function up_load_versions!(pkg::PackageSpec, entry::PackageEntry, level::Upgrade
 end
 
 up_load_manifest_info!(pkg::PackageSpec, ::Nothing) = nothing
-function up_load_manifest_info!(pkg::PackageSpec, entry::PackageEntry)
+function up_load_manifest_info!(pkg::PackageSpec, entry::ManifestEntry)
     pkg.name = entry.name # TODO check name is same
     pkg.repo = entry.repo # TODO check that repo is same
     pkg.path = entry.path
@@ -1068,7 +1245,7 @@ function update_package_pin!(pkg::PackageSpec, ::Nothing)
     pkg.pinned = true
 end
 
-function update_package_pin!(pkg::PackageSpec, entry::PackageEntry)
+function update_package_pin!(pkg::PackageSpec, entry::ManifestEntry)
     is_stdlib(pkg.uuid) && pkgerror("cannot `pin` stdlibs.")
     !entry.pinned || pkgerror("`$(entry.name)` already pinned, use `free` first.")
     entry.path === nothing || pkgerror("Can not `pin` `dev`ed package")
@@ -1094,7 +1271,7 @@ end
 
 update_package_free!(pkg::PackageSpec, ::Nothing) =
     pkgerror("Trying to free a package which does not exist in the manifest")
-function update_package_free!(pkg::PackageSpec, entry::PackageEntry)
+function update_package_free!(pkg::PackageSpec, entry::ManifestEntry)
     # TODO check that `pin` and `path` do not occur in same node when reading manifest
     if entry.pinned
         pkg.pinned = false
@@ -1178,7 +1355,7 @@ function sandbox_preserve(ctx::Context, target::PackageSpec, test_project::Strin
     return graph
 end
 
-function abspath!(ctx, manifest::Dict{UUID,PackageEntry})
+function abspath!(ctx, manifest::Dict{UUID,ManifestEntry})
     for (uuid, entry) in manifest
         entry.path !== nothing || continue
         entry.path = project_rel_path(ctx, entry.path)
@@ -1220,7 +1397,7 @@ function sandbox(fn::Function, ctx::Context, target::PackageSpec, target_path::S
     end
 end
 
-function update_package_test!(pkg::PackageSpec, entry::PackageEntry)
+function update_package_test!(pkg::PackageSpec, entry::ManifestEntry)
     is_stdlib(pkg.uuid) && return
     pkg.version = entry.version
     pkg.tree_hash = entry.tree_hash
@@ -1249,7 +1426,7 @@ function test(ctx::Context, pkgs::Vector{PackageSpec}; coverage=false, test_fn=n
     source_paths     = String[]
     for pkg in pkgs
         pkg.special_action = PKGSPEC_TESTED
-        sourcepath = project_rel_path(ctx, source_path(pkg)) # TODO
+        sourcepath = project_rel_path(ctx, source_path(ctx, pkg)) # TODO
         !isfile(testfile(sourcepath)) && push!(missing_runtests, pkg.name)
         push!(source_paths, sourcepath)
     end

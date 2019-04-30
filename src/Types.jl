@@ -12,14 +12,14 @@ using REPL.TerminalMenus
 
 using ..TOML
 import ..Pkg, ..UPDATED_REGISTRY_THIS_SESSION
-import Pkg: GitTools, depots, depots1, logdir
+import Pkg: GitTools, depots, depots1, logdir, Platform, platform_key_abi
 
 import Base: SHA1
 using SHA
 
 export UUID, pkgID, SHA1, VersionRange, VersionSpec, empty_versionspec,
     Requires, Fixed, merge_requires!, satisfies, ResolverError,
-    PackageSpec, EnvCache, Context, GitRepo, Context!, get_deps,
+    Dependency, GenericDependency, PackageSpec, ArtifactSpec, EnvCache, Context, GitRepo, Context!, get_deps,
     PkgError, pkgerror, has_name, has_uuid, is_stdlib, write_env, parse_toml, find_registered!,
     project_resolve!, project_deps_resolve!, manifest_resolve!, registry_resolve!, stdlib_resolve!, handle_repos_develop!, handle_repos_add!, ensure_resolved, instantiate_pkg_repo!,
     manifest_info, registered_uuids, registered_paths, registered_uuid, registered_name,
@@ -52,6 +52,7 @@ uuid5(namespace::UUID, key::AbstractString) = uuid5(namespace, String(key))
 const uuid_dns = UUID(0x6ba7b810_9dad_11d1_80b4_00c04fd430c8)
 const uuid_julia_project = uuid5(uuid_dns, "julialang.org")
 const uuid_package = uuid5(uuid_julia_project, "package")
+const uuid_artifact = uuid5(uuid_julia_project, "artifact")
 const uuid_registry = uuid5(uuid_julia_project, "registry")
 const uuid_julia = uuid5(uuid_package, "julia")
 
@@ -112,10 +113,24 @@ end
 pkgerror(msg::String...) = throw(PkgError(join(msg)))
 Base.showerror(io::IO, err::PkgError) = print(io, err.msg)
 
+###############
+# Dependency  #
+###############
+abstract type Dependency end;
 
-###############
-# PackageSpec #
-###############
+# All dependencies must contain a `name` and `uuid` member.
+has_name(pkg::Dependency) = pkg.name !== nothing
+has_uuid(pkg::Dependency) = pkg.uuid !== nothing
+
+function Base.getindex(pkgs::Vector{D}, uuid::UUID) where {D <: Dependency}
+    index = findfirst(pkg -> pkg.uuid == uuid, pkgs)
+    return index === nothing ? nothing : pkgs[index]
+end
+
+
+#####################
+# GenericDependency #
+#####################
 @enum(UpgradeLevel, UPLEVEL_FIXED, UPLEVEL_PATCH, UPLEVEL_MINOR, UPLEVEL_MAJOR)
 @enum(PackageMode, PKGMODE_PROJECT, PKGMODE_MANIFEST, PKGMODE_COMBINED)
 @enum(PackageSpecialAction, PKGSPEC_NOTHING, PKGSPEC_PINNED, PKGSPEC_FREED,
@@ -123,16 +138,33 @@ Base.showerror(io::IO, err::PkgError) = print(io, err.msg)
 
 const VersionTypes = Union{VersionNumber,VersionSpec,UpgradeLevel}
 
+Base.@kwdef mutable struct GenericDependency <: Dependency
+    name::Union{Nothing,String} = nothing
+    uuid::Union{Nothing,UUID} = nothing
+    version::VersionTypes = VersionSpec()
+    mode::PackageMode = PKGMODE_PROJECT
+end
+
+GenericDependency(name::AbstractString) = GenericDependency(;name=name)
+GenericDependency(name::AbstractString, uuid::UUID) = GenericDependency(;name=name, uuid=uuid)
+GenericDependency(name::AbstractString, version::VersionTypes) = GenericDependency(;name=name, version=version)
+GenericDependency(n::AbstractString, u::UUID, v::VersionTypes) = GenericDependency(;name=n, uuid=u, version=v)
+
 # The url field can also be a local path, rename?
 Base.@kwdef mutable struct GitRepo
     url::Union{Nothing,String} = nothing
     rev::Union{Nothing,String} = nothing
 end
 
-Base.:(==)(r1::GitRepo, r2::GitRepo) =
-    r1.url == r2.url && r1.rev == r2.rev
+function Base.:(==)(r1::GitRepo, r2::GitRepo)
+    return r1.url == r2.url &&
+           r1.rev == r2.rev
+end
 
-Base.@kwdef mutable struct PackageSpec
+###############
+# PackageSpec #
+###############
+Base.@kwdef mutable struct PackageSpec <: Dependency
     name::Union{Nothing,String} = nothing
     uuid::Union{Nothing,UUID} = nothing
     version::VersionTypes = VersionSpec()
@@ -147,9 +179,6 @@ PackageSpec(name::AbstractString) = PackageSpec(;name=name)
 PackageSpec(name::AbstractString, uuid::UUID) = PackageSpec(;name=name, uuid=uuid)
 PackageSpec(name::AbstractString, version::VersionTypes) = PackageSpec(;name=name, version=version)
 PackageSpec(n::AbstractString, u::UUID, v::VersionTypes) = PackageSpec(;name=n, uuid=u, version=v)
-
-has_name(pkg::PackageSpec) = pkg.name !== nothing
-has_uuid(pkg::PackageSpec) = pkg.uuid !== nothing
 
 function Base.show(io::IO, pkg::PackageSpec)
     vstr = repr(pkg.version)
@@ -166,16 +195,45 @@ function Base.show(io::IO, pkg::PackageSpec)
     if pkg.repo.rev !== nothing
         push!(f, "rev" => pkg.repo.rev)
     end
-    print(io, "PackageSpec(\n")
+    print(io, "$(typeof(pkg))(\n")
     for (field, value) in f
         print(io, "  ", field, " = ", value, "\n")
     end
     print(io, ")")
 end
 
-function Base.getindex(pkgs::Vector{PackageSpec}, uuid::UUID)
-    index = findfirst(pkg -> pkg.uuid == uuid, pkgs)
-    return index === nothing ? nothing : pkgs[index]
+
+################
+# ArtifactSpec #
+################
+
+Base.@kwdef mutable struct ArtifactSpec <: Dependency
+    name::Union{Nothing,String} = nothing
+    uuid::Union{Nothing,UUID} = nothing
+    version::VersionTypes = VersionSpec()
+    path::Union{Nothing,String} = nothing
+    pinned::Bool = false
+    special_action::PackageSpecialAction = PKGSPEC_NOTHING # If the package is currently being pinned, freed etc
+    mode::PackageMode = PKGMODE_PROJECT
+end
+ArtifactSpec(name::AbstractString) = ArtifactSpec(;name=name)
+ArtifactSpec(name::AbstractString, uuid::UUID) = ArtifactSpec(;name=name, uuid=uuid)
+ArtifactSpec(name::AbstractString, version::VersionTypes) = ArtifactSpec(;name=name, version=version)
+ArtifactSpec(n::AbstractString, u::UUID, v::VersionTypes) = ArtifactSpec(;name=n, uuid=u, version=v)
+
+function Base.show(io::IO, pkg::ArtifactSpec)
+    vstr = repr(pkg.version)
+    f = []
+    pkg.name !== nothing && push!(f, "name" => pkg.name)
+    pkg.uuid !== nothing && push!(f, "uuid" => pkg.uuid)
+    pkg.path !== nothing && push!(f, "dev/path" => pkg.path)
+    pkg.pinned && push!(f, "pinned" => pkg.pinned)
+    push!(f, "version" => (vstr == "VersionSpec(\"*\")" ? "*" : vstr))
+    print(io, "$(typeof(pkg))(\n")
+    for (field, value) in f
+        print(io, "  ", field, " = ", value, "\n")
+    end
+    print(io, ")")
 end
 
 ############
@@ -240,33 +298,55 @@ Base.@kwdef mutable struct Project
     compat::Dict{String,String} = Dict{String,String}()# TODO Dict{String, VersionSpec}
 end
 
-Base.@kwdef mutable struct PackageEntry
+Base.@kwdef mutable struct ManifestEntry
     name::Union{String,Nothing} = nothing
     version::Union{VersionNumber,Nothing} = nothing
     path::Union{String,Nothing} = nothing
     pinned::Bool = false
     repo::GitRepo = GitRepo()
     tree_hash::Union{Nothing,SHA1} = nothing
+    platform::Union{Nothing,Platform} = nothing
     deps::Dict{String,UUID} = Dict{String,UUID}()
     other::Union{Dict,Nothing} = nothing
 end
-const Manifest = Dict{UUID,PackageEntry}
+const Manifest = Dict{UUID,ManifestEntry}
 
-function Base.show(io::IO, pkg::PackageEntry)
+function Base.show(io::IO, pkg::ManifestEntry)
     f = []
     pkg.name      !== nothing && push!(f, "name"      => pkg.name)
     pkg.version   !== nothing && push!(f, "version"   => pkg.version)
     pkg.tree_hash !== nothing && push!(f, "tree_hash" => pkg.tree_hash)
+    pkg.platform  !== nothing && push!(f, "platform"  => pkg.platform)
     pkg.path      !== nothing && push!(f, "dev/path"  => pkg.path)
     pkg.pinned                && push!(f, "pinned"    => pkg.pinned)
     pkg.repo.url  !== nothing && push!(f, "url/path"  => "`$(pkg.repo.url)`")
     pkg.repo.rev  !== nothing && push!(f, "rev"       => pkg.repo.rev)
-    print(io, "PackageEntry(\n")
+    print(io, "ManifestEntry(\n")
     for (field, value) in f
         print(io, "  ", field, " = ", value, "\n")
     end
     print(io, ")")
 end
+
+ManifestEntry(pkg::PackageSpec) = ManifestEntry(;
+    name = pkg.name,
+    version = pkg.version,
+    pinned = pkg.pinned,
+    tree_hash = pkg.tree_hash,
+    path = pkg.path,
+    repo = pkg.repo,
+)
+ManifestEntry(pkg::ArtifactSpec; platform = platform_key_abi()) = ManifestEntry(;
+    name = pkg.name,
+    version = pkg.version,
+    pinned = pkg.pinned,
+    platform = platform,
+    path = pkg.path,
+)
+ManifestEntry(pkg::GenericDependency) = ManifestEntry(;
+    name = pkg.name,
+    version = pkg.version,
+)
 
 
 mutable struct EnvCache
@@ -349,7 +429,7 @@ function EnvCache(env::Union{Nothing,String}=nothing)
 end
 
 project_uuid(env::EnvCache) = env.pkg === nothing ? nothing : env.pkg.uuid
-collides_with_project(env::EnvCache, pkg::PackageSpec) =
+collides_with_project(env::EnvCache, pkg::D) where {D <: Dependency} =
     is_project_name(env, pkg.name) || is_project_uuid(env, pkg.uuid)
 is_project(env::EnvCache, pkg::PackageSpec) = is_project_uuid(env, pkg.uuid)
 is_project_name(env::EnvCache, name::String) =
@@ -584,7 +664,7 @@ function remote_dev_path!(ctx::Context, pkg::PackageSpec, shared::Bool)
     return pkg.uuid
 end
 
-function handle_repos_develop!(ctx::Context, pkgs::AbstractVector{PackageSpec}, shared::Bool)
+function handle_repos_develop!(ctx::Context, pkgs::AbstractVector{D}, shared::Bool) where {D <: Dependency}
     new_uuids = UUID[]
     for pkg in pkgs
         pkg.special_action = PKGSPEC_DEVELOPED
@@ -719,7 +799,7 @@ end
 Ensure repo specified by `repo` exists at version path for package
 Set tree_hash
 """
-function handle_repos_add!(ctx::Context, pkgs::AbstractVector{PackageSpec})
+function handle_repos_add!(ctx::Context, pkgs::AbstractVector{D}) where {D <: Dependency}
     new_uuids = UUID[]
     for pkg in pkgs
         handle_repo_add!(ctx, pkg) && push!(new_uuids, pkg.uuid)
@@ -798,7 +878,7 @@ end
 # Resolving packages from name or uuid #
 ########################################
 
-function project_resolve!(env::EnvCache, pkgs::AbstractVector{PackageSpec})
+function project_resolve!(env::EnvCache, pkgs::AbstractVector{D}) where {D <: Dependency}
     for pkg in pkgs
         if has_uuid(pkg) && !has_name(pkg) && Types.is_project_uuid(env, pkg.uuid)
             pkg.name = env.pkg.name
@@ -810,7 +890,7 @@ function project_resolve!(env::EnvCache, pkgs::AbstractVector{PackageSpec})
 end
 
 # Disambiguate name/uuid package specifications using project info.
-function project_deps_resolve!(env::EnvCache, pkgs::AbstractVector{PackageSpec})
+function project_deps_resolve!(env::EnvCache, pkgs::AbstractVector{D}) where {D <: Dependency}
     uuids = env.project.deps
     names = Dict(uuid => name for (name, uuid) in uuids)
     for pkg in pkgs
@@ -825,7 +905,7 @@ function project_deps_resolve!(env::EnvCache, pkgs::AbstractVector{PackageSpec})
 end
 
 # Disambiguate name/uuid package specifications using manifest info.
-function manifest_resolve!(env::EnvCache, pkgs::AbstractVector{PackageSpec})
+function manifest_resolve!(env::EnvCache, pkgs::AbstractVector{D}) where {D <: Dependency}
     uuids = Dict{String,Vector{UUID}}()
     names = Dict{UUID,String}()
     for (uuid, entry) in env.manifest
@@ -844,10 +924,10 @@ function manifest_resolve!(env::EnvCache, pkgs::AbstractVector{PackageSpec})
 end
 
 # Disambiguate name/uuid package specifications using registry info.
-registry_resolve!(env::EnvCache, pkg::PackageSpec) = registry_resolve!(env, [pkg])
-function registry_resolve!(env::EnvCache, pkgs::AbstractVector{PackageSpec})
+registry_resolve!(env::EnvCache, pkg::Dependency) = registry_resolve!(env, [pkg])
+function registry_resolve!(env::EnvCache, pkgs::AbstractVector{<:Dependency})
     # if there are no half-specified packages, return early
-    any(pkg -> has_name(pkg) ⊻ has_uuid(pkg), pkgs) || return
+    any(pkg -> has_name(pkg) ⊻ has_uuid(pkg), pkgs) || return pkgs
     # collect all names and uuids since we're looking anyway
     names = String[pkg.name for pkg in pkgs if has_name(pkg)]
     uuids = UUID[pkg.uuid for pkg in pkgs if has_uuid(pkg)]
@@ -864,7 +944,7 @@ function registry_resolve!(env::EnvCache, pkgs::AbstractVector{PackageSpec})
     return pkgs
 end
 
-function stdlib_resolve!(ctx::Context, pkgs::AbstractVector{PackageSpec})
+function stdlib_resolve!(ctx::Context, pkgs::AbstractVector{<:Dependency})
     for pkg in pkgs
         @assert has_name(pkg) || has_uuid(pkg)
         if has_name(pkg) && !has_uuid(pkg)
@@ -881,8 +961,8 @@ end
 
 # Ensure that all packages are fully resolved
 function ensure_resolved(env::EnvCache,
-    pkgs::AbstractVector{PackageSpec};
-    registry::Bool=false,)::Nothing
+    pkgs::AbstractVector{D};
+    registry::Bool=false,)::Nothing where {D <: Dependency}
     unresolved = Dict{String,Vector{UUID}}()
     for name in [pkg.name for pkg in pkgs if !has_uuid(pkg)]
         uuids = [uuid for (uuid, entry) in env.manifest if entry.name == name]
@@ -1108,6 +1188,7 @@ end
 # entry point for `registry up`
 function update_registries(ctx::Context, regs::Vector{RegistrySpec} = collect_registries(depots1());
                            force::Bool=false)
+    return
     !force && UPDATED_REGISTRY_THIS_SESSION[] && return
     errors = Tuple{String, String}[]
     ctx.preview && (@info("skipping updating registries in preview mode"); return nothing)
@@ -1313,7 +1394,7 @@ end
 
 # Find package by UUID in the manifest file
 manifest_info(env::EnvCache, uuid::Nothing) = nothing
-function manifest_info(env::EnvCache, uuid::UUID)::Union{PackageEntry,Nothing}
+function manifest_info(env::EnvCache, uuid::UUID)::Union{ManifestEntry,Nothing}
     #any(uuids -> uuid in uuids, values(env.uuids)) || find_registered!(env, [uuid])
     return get(env.manifest, uuid, nothing)
 end

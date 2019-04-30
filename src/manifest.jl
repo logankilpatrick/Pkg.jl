@@ -57,6 +57,14 @@ function safe_path(path::String)
     return path
 end
 
+function safe_platform_key_abi(platkey::String)
+    platkey = platform_key_abi(platkey)
+    if isa(platkey, UnknownPlatform)
+        return nothing
+    end
+    return platkey
+end
+
 read_deps(::Nothing) = Dict{String, UUID}()
 read_deps(deps) = pkgerror("Expected `deps` field to be either a list or a table")
 function read_deps(deps::AbstractVector)
@@ -75,7 +83,7 @@ end
 
 struct Stage1
     uuid::UUID
-    entry::PackageEntry
+    entry::ManifestEntry
     deps::Union{AbstractVector{<:AbstractString}, Dict{String,UUID}}
 end
 
@@ -100,7 +108,7 @@ function validate_manifest(stage1::Dict{String,Vector{Stage1}})
         info.entry.deps = handle_deps(info.deps, stage1)
     end
     # invariant: all dependencies are now Dict{String,UUID}
-    manifest = Dict{UUID, PackageEntry}()
+    manifest = Dict{UUID, ManifestEntry}()
     for (name, infos) in stage1, info in infos
         manifest[info.uuid] = info.entry
     end
@@ -117,7 +125,7 @@ function Manifest(raw::Dict)::Manifest
     stage1 = Dict{String,Vector{Stage1}}()
     for (name, infos) in raw, info in infos
         # TODO is name guaranteed to be a string?
-        entry = PackageEntry()
+        entry = ManifestEntry()
         entry.name     = name
         entry.pinned   = read_pinned(get(info, "pinned", nothing))
         uuid           = read_field("uuid",          nothing, info, safe_uuid)
@@ -126,11 +134,12 @@ function Manifest(raw::Dict)::Manifest
         entry.repo.url = read_field("repo-url",      nothing, info, identity)
         entry.repo.rev = read_field("repo-rev",      nothing, info, identity)
         entry.tree_hash = read_field("git-tree-sha1", nothing, info, safe_SHA1)
+        entry.platform = read_field("platform",      nothing, info, safe_platform_key_abi)
         deps = read_deps(get(info, "deps", nothing))
         entry.other = info
         stage1[name] = push!(get(stage1, name, Stage1[]), Stage1(uuid, entry, deps))
     end
-    # by this point, all the fields of the `PackageEntry`s have been type casted
+    # by this point, all the fields of the `ManifestEntry`s have been type casted
     # but we have *not* verified the _graph_ structure of the manifest
     return validate_manifest(stage1)
 end
@@ -152,7 +161,7 @@ function read_manifest(io::IO; path=nothing)
 end
 
 read_manifest(path::String)::Manifest =
-    isfile(path) ? open(io->read_manifest(io;path=path), path) : Dict{UUID,PackageEntry}()
+    isfile(path) ? open(io->read_manifest(io;path=path), path) : Dict{UUID,ManifestEntry}()
 
 ###########
 # WRITING #
