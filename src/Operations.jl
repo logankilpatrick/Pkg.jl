@@ -1149,7 +1149,7 @@ function add(ctx::Context, pkgs::Vector{<:Dependency}, new_git=UUID[])
 end
 
 # Input: name, uuid, and path
-function develop(ctx::Context, pkgs::Vector{PackageSpec}, new_git::Vector{UUID};
+function develop(ctx::Context, pkgs::Vector{<:Dependency}, new_git::Vector{UUID};
                  keep_manifest::Bool=false)
     assert_can_add(ctx, pkgs)
     # no need to look at manifest.. dev will just nuke whatever is there before
@@ -1169,8 +1169,8 @@ end
 
 # load version constraint
 # if version isa VersionNumber -> set tree_hash too
-up_load_versions!(pkg::PackageSpec, ::Nothing, level::UpgradeLevel) = false
-function up_load_versions!(pkg::PackageSpec, entry::ManifestEntry, level::UpgradeLevel)
+up_load_versions!(pkg::Dependency, ::Nothing, level::UpgradeLevel) = false
+function up_load_versions!(pkg::Dependency, entry::ManifestEntry, level::UpgradeLevel)
     entry.version !== nothing || return false # no version to set
     if entry.repo.url !== nothing # repo packages have a version but are treated special
         pkg.repo = entry.repo
@@ -1199,8 +1199,8 @@ function up_load_versions!(pkg::PackageSpec, entry::ManifestEntry, level::Upgrad
     return false
 end
 
-up_load_manifest_info!(pkg::PackageSpec, ::Nothing) = nothing
-function up_load_manifest_info!(pkg::PackageSpec, entry::ManifestEntry)
+up_load_manifest_info!(pkg::Dependency, ::Nothing) = nothing
+function up_load_manifest_info!(pkg::Dependency, entry::ManifestEntry)
     pkg.name = entry.name # TODO check name is same
     pkg.repo = entry.repo # TODO check that repo is same
     pkg.path = entry.path
@@ -1208,7 +1208,7 @@ function up_load_manifest_info!(pkg::PackageSpec, entry::ManifestEntry)
     # dont set version or tree_hash -> they should be recomputed
 end
 
-function up(ctx::Context, pkgs::Vector{PackageSpec}, level::UpgradeLevel)
+function up(ctx::Context, pkgs::Vector{<:Dependency}, level::UpgradeLevel)
     new_git = UUID[]
     # TODO check all pkg.version == VersionSpec()
     # set version constraints according to `level`

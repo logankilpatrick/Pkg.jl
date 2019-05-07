@@ -1,4 +1,4 @@
-export platform_key_abi, platform_dlext, valid_dl_path, arch, libc, compiler_abi, libgfortran_version, libstdcxx_version, cxxstring_abi,
+export platform_key_abi, platform_dlext, valid_dl_path, arch, libc, compiler_abi, libgfortran_version, cxxstring_abi,
        call_abi, wordsize, triplet, choose_download, platforms_match,
        CompilerABI, Platform, UnknownPlatform, Linux, MacOS, Windows, FreeBSD
 import Base: show
@@ -36,6 +36,9 @@ struct CompilerABI
         return new(libgfortran_version, cxxstring_abi)
     end
 end
+
+libgfortran_version(cabi::CompilerABI) = cabi.libgfortran_version
+cxxstring_abi(cabi::CompilerABI) = cabi.cxxstring_abi
 
 function show(io::IO, cabi::CompilerABI)
     write(io, "CompilerABI(")
@@ -98,16 +101,6 @@ struct Linux <: Platform
 
         return new(arch, libc, call_abi, compiler_abi)
     end
-
-    # Helper constructor for convenient construction with CompilerABI arguments
-    function Linux(arch::Symbol;
-                   libc::Symbol=:glibc,
-                   call_abi::Symbol=:default_abi,
-                   libgfortran_version::Symbol=:libgfortran_any,
-                   cxx11_abi::Symbol=:cxx_any)
-        return Linux(arch; libc=libc, call_abi=call_abi,
-                           compiler_abi=CompilerABI(libgfortran_version, cxx11_abi))
-    end
 end
 
 struct MacOS <: Platform
@@ -134,16 +127,6 @@ struct MacOS <: Platform
 
         return new(arch, libc, call_abi, compiler_abi)
     end
-
-    # Helper constructor for convenient construction with CompilerABI arguments
-    function MacOS(arch::Symbol=:x86_64;
-                   libc::Symbol=:blank_libc,
-                   call_abi::Symbol=:default_abi,
-                   libgfortran_version::Symbol=:libgfortran_any,
-                   cxx11_abi::Symbol=:cxx_any)
-        return MacOS(arch; libc=libc, call_abi=call_abi,
-                           compiler_abi=CompilerABI(libgfortran_version, cxx11_abi))
-    end
 end
 
 struct Windows <: Platform
@@ -169,16 +152,6 @@ struct Windows <: Platform
         end
 
         return new(arch, libc, call_abi, compiler_abi)
-    end
-
-    # Helper constructor for convenient construction with CompilerABI arguments
-    function Windows(arch::Symbol;
-                     libc::Symbol=:blank_libc,
-                     call_abi::Symbol=:default_abi,
-                     libgfortran_version::Symbol=:libgfortran_any,
-                     cxx11_abi::Symbol=:cxx_any)
-        return Windows(arch; libc=libc, call_abi=call_abi,
-                           compiler_abi=CompilerABI(libgfortran_version, cxx11_abi))
     end
 end
 
@@ -232,15 +205,6 @@ struct FreeBSD <: Platform
         end
 
         return new(arch, libc, call_abi, compiler_abi)
-    end
-
-    function FreeBSD(arch::Symbol=:x86_64;
-                     libc::Symbol=:blank_libc,
-                     call_abi::Symbol=:default_abi,
-                     libgfortran_version::Symbol=:libgfortran_any,
-                     cxx11_abi::Symbol=:cxx_any)
-        return FreeBSD(arch; libc=libc, call_abi=call_abi,
-                           compiler_abi=CompilerABI(libgfortran_version, cxx11_abi))
     end
 end
 
@@ -708,7 +672,7 @@ function detect_compiler_abi()
 
     # If we have no constraint from libgfortran linkage (impossible within current
     # Julia, but let's be planning for the future here) then inspect libstdc++.
-    if libgfortran_version == :gcc_any
+    if libgfortran_version == :libgfortran_any
         libgfortran_version = detect_libstdcxxstring_abi()
     end
 
@@ -743,8 +707,8 @@ function platforms_match(a::Platform, b::Platform)
     function flexible_constraints(a, b)
         ac = compiler_abi(a)
         bc = compiler_abi(b)
-        gcc_match = (ac.libgfortran_version == :gcc_any
-                  || bc.libgfortran_version == :gcc_any
+        gcc_match = (ac.libgfortran_version == :libgfortran_any
+                  || bc.libgfortran_version == :libgfortran_any
                   || ac.libgfortran_version == bc.libgfortran_version)
         cxx_match = (ac.cxxstring_abi == :cxx_any
                   || bc.cxxstring_abi == :cxx_any
@@ -768,7 +732,7 @@ can be found.
 
 Platform attributes such as architecture, libc, calling ABI, etc... must all
 match exactly, however attributes such as compiler ABI can have wildcards
-within them such as `:gcc_any` which matches any version of GCC.
+within them such as `:libgfortran_any` which matches any version of GCC.
 """
 function choose_download(download_info::Dict, platform::Platform = platform_key_abi())
     ps = collect(filter(p -> platforms_match(p, platform), keys(download_info)))
