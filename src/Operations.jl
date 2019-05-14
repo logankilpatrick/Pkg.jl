@@ -9,6 +9,7 @@ import LibGit2
 import REPL
 using REPL.TerminalMenus
 using ..Types, ..GraphType, ..Resolve, ..Pkg2, ..GitTools, ..Display
+import ..Types: get_repo_url
 import ..depots, ..depots1, ..devdir, ..Types.uuid_julia, ..Types.ManifestEntry
 import ..Pkg, ..triplet, ..Platform, ..platform_key_abi, ..choose_download, ..probe_platform_engines!, ..download_verify_unpack
 using SHA
@@ -355,7 +356,7 @@ function resolve_versions!(ctx::Context, pkgs::Vector{Dependency})
 
     # construct data structures for resolver and call it
     # this also sets pkg.version for fixed packages
-    fixed = collect_fixed!(ctx, filter(is_fixed, pkgs), names)
+    fixed = collect_fixed!(ctx, filter(p -> p.path != nothing || get_repo_url(p) != nothing, pkgs), names)
 
     # non fixed packages are `add`ed by version: their version is either restricted or free
     # fixed packages are `dev`ed or `add`ed by repo
@@ -534,7 +535,7 @@ end
 
 function load_url(ctx::Context, pkg::PackageSpec)
     urls = String[]
-    for path in registered_paths(ctx.env, uuid = pkg.uuid)
+    for path in registered_paths(ctx.env, pkg.uuid)
         info = parse_toml(path, "Package.toml")
         url = info["repo"]
         if !(url in urls)
@@ -1139,19 +1140,19 @@ function develop(ctx::Context, pkgs::Vector{<:Dependency}, new_git::Vector{UUID}
     build_versions(ctx, union(new_apply, new_git))
 end
 
+concretize_dependency(pkg::Dependency, entry) = pkg
+function concretize_dependency(pkg::GenericDependency, entry::ManifestEntry)
+    if entry.kind == "artifact"
+        return ArtifactSpec(pkg.name, pkg.uuid)
+    else
+        return PackageSpec(pkg.name, pkg.uuid)
+    end
+end
+
 # load version constraint
 # if version isa VersionNumber -> set tree_hash too
 up_load_versions!(pkg::Dependency, ::Nothing, level::UpgradeLevel) = false
 function up_load_versions!(pkg::Dependency, entry::ManifestEntry, level::UpgradeLevel)
-    # We can only deal with concrete dependency types, so concretize them!
-    if pkg isa GenericDependency
-        if entry.kind == "artifact"
-            pkg = ArtifactSpec(pkg.name, pkg.uuid)
-        else
-            pkg = PackageSpec(pkg.name, pkg.uuid)
-        end
-    end
-
     entry.version !== nothing || return false # no version to set
     if entry.repo.url !== nothing # repo packages have a version but are treated special
         pkg.repo = entry.repo
@@ -1181,9 +1182,11 @@ function up_load_versions!(pkg::Dependency, entry::ManifestEntry, level::Upgrade
 end
 
 up_load_manifest_info!(pkg::Dependency, ::Nothing) = nothing
-function up_load_manifest_info!(pkg::Dependency, entry::ManifestEntry)
+function up_load_manifest_info!(pkg::PackageSpec, entry::ManifestEntry)
     pkg.name = entry.name # TODO check name is same
-    pkg.repo = entry.repo # TODO check that repo is same
+    if entry.repo != nothing
+        pkg.repo = entry.repo # TODO check that repo is same
+    end
     pkg.path = entry.path
     pkg.pinned = entry.pinned
     # dont set version or tree_hash -> they should be recomputed
@@ -1193,9 +1196,18 @@ function up(ctx::Context, pkgs::Vector{<:Dependency}, level::UpgradeLevel)
     new_git = UUID[]
     # TODO check all pkg.version == VersionSpec()
     # set version constraints according to `level`
-    for pkg in pkgs
-        new = up_load_versions!(pkg, manifest_info(ctx.env, pkg.uuid), level)
-        new && push!(new_git, pkg.uuid) #TODO put download + push! in utility function
+
+    # Purposefully widen so that we can concretize our packages
+    pkgs = Dependency[p for p in pkgs]
+
+    for idx in 1:length(pkgs)
+        # We need to concretize these pkgs pretty immediately, so do that here
+        entry = manifest_info(ctx.env, pkgs[idx].uuid) 
+        pkgs[idx] = concretize_dependency(pkgs[idx], entry)
+
+        # Next, pass off to up_load_versions!()
+        new = up_load_versions!(pkgs[idx], entry, level)
+        new && push!(new_git, pkgs[idx].uuid) #TODO put download + push! in utility function
     end
     # make sure to include at least direct deps
     for (name, uuid) in ctx.env.project.deps
