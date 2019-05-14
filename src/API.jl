@@ -30,12 +30,12 @@ function check_package_name(x::AbstractString, mode=nothing)
     return GenericDependency(x)
 end
 
-develop(pkg::Union{AbstractString, D}; kwargs...) where {D <: Dependency} = develop([pkg]; kwargs...)
+develop(pkg::Union{AbstractString, <:Dependency}; kwargs...) = develop([pkg]; kwargs...)
 develop(pkgs::Vector{<:AbstractString}; kwargs...) =
     develop([check_package_name(pkg, :develop) for pkg in pkgs]; kwargs...)
-develop(pkgs::Vector{D}; kwargs...) where {D <: Dependency} = develop(Context(), pkgs; kwargs...)
-function develop(ctx::Context, pkgs::Vector{D};
-                 shared::Bool=true, keep_manifest::Bool=false, kwargs...) where {D <: Dependency}
+develop(pkgs::Vector{<:Dependency}; kwargs...) = develop(Context(), pkgs; kwargs...)
+function develop(ctx::Context, pkgs::Vector{<:Dependency};
+                 shared::Bool=true, keep_manifest::Bool=false, kwargs...)
     pkgs = deepcopy(pkgs) # deepcopy for avoid mutating PackageSpec members
     Context!(ctx; kwargs...)
 
@@ -65,7 +65,7 @@ add(pkg::Union{AbstractString, <:Dependency}; kwargs...) = add([pkg]; kwargs...)
 add(pkgs::Vector{<:AbstractString}; kwargs...) =
     add([check_package_name(pkg, :add) for pkg in pkgs]; kwargs...)
 add(pkgs::Vector{<:Dependency}; kwargs...) = add(Context(), pkgs; kwargs...)
-function add(ctx::Context, pkgs::Vector{D}; kwargs...) where {D <: Dependency}
+function add(ctx::Context, pkgs::Vector{<:Dependency}; kwargs...)
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     Context!(ctx; kwargs...)
 
@@ -101,11 +101,11 @@ function add(ctx::Context, pkgs::Vector{D}; kwargs...) where {D <: Dependency}
     return
 end
 
-rm(pkg::Union{AbstractString, D}; kwargs...) where {D <: Dependency} = rm([pkg]; kwargs...)
+rm(pkg::Union{AbstractString,<:Dependency}; kwargs...) = rm([pkg]; kwargs...)
 rm(pkgs::Vector{<:AbstractString}; kwargs...)          = rm([GenericDependency(pkg) for pkg in pkgs]; kwargs...)
-rm(pkgs::Vector{D}; kwargs...) where {D <: Dependency} = rm(Context(), pkgs; kwargs...)
+rm(pkgs::Vector{<:Dependency}; kwargs...)              = rm(Context(), pkgs; kwargs...)
 
-function rm(ctx::Context, pkgs::Vector{D}; mode=PKGMODE_PROJECT, kwargs...) where {D <: Dependency}
+function rm(ctx::Context, pkgs::Vector{<:Dependency}; mode=PKGMODE_PROJECT, kwargs...)
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     foreach(pkg -> pkg.mode = mode, pkgs)
 
@@ -133,13 +133,13 @@ end
 
 up(ctx::Context; kwargs...)                             = up(ctx, Dependency[]; kwargs...)
 up(; kwargs...)                                         = up(Dependency[]; kwargs...)
-up(pkg::Union{AbstractString, D}; kwargs...) where {D <: Dependency} = up([pkg]; kwargs...)
+up(pkg::Union{AbstractString, <:Dependency}; kwargs...) = up([pkg]; kwargs...)
 up(pkgs::Vector{<:AbstractString}; kwargs...)           = up([GenericDependency(pkg) for pkg in pkgs]; kwargs...)
-up(pkgs::Vector{D}; kwargs...)  where {D <: Dependency} = up(Context(), pkgs; kwargs...)
+up(pkgs::Vector{<:Dependency}; kwargs...)               = up(Context(), pkgs; kwargs...)
 
-function up(ctx::Context, pkgs::Vector{D};
+function up(ctx::Context, pkgs::Vector{<:Dependency};
             level::UpgradeLevel=UPLEVEL_MAJOR, mode::PackageMode=PKGMODE_PROJECT,
-            update_registry::Bool=true, kwargs...) where {D <: Dependency}
+            update_registry::Bool=true, kwargs...)
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     foreach(pkg -> pkg.mode = mode, pkgs)
 
@@ -172,11 +172,11 @@ end
 resolve(ctx::Context=Context()) =
     up(ctx, level=UPLEVEL_FIXED, mode=PKGMODE_MANIFEST, update_registry=false)
 
-pin(pkg::Union{AbstractString, D}; kwargs...) where {D <: Dependency} = pin([pkg]; kwargs...)
+pin(pkg::Union{AbstractString,<:Dependency}; kwargs...) = pin([pkg]; kwargs...)
 pin(pkgs::Vector{<:AbstractString}; kwargs...)          = pin([GenericDependency(pkg) for pkg in pkgs]; kwargs...)
-pin(pkgs::Vector{D}; kwargs...) where {D <: Dependency} = pin(Context(), pkgs; kwargs...)
+pin(pkgs::Vector{<:Dependency}; kwargs...)              = pin(Context(), pkgs; kwargs...)
 
-function pin(ctx::Context, pkgs::Vector{D}; kwargs...) where {D <: Dependency}
+function pin(ctx::Context, pkgs::Vector{<:Dependency}; kwargs...)
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     Context!(ctx; kwargs...)
     ctx.preview && preview_info()
@@ -196,11 +196,11 @@ function pin(ctx::Context, pkgs::Vector{D}; kwargs...) where {D <: Dependency}
 end
 
 
-free(pkg::Union{AbstractString, D}; kwargs...) where {D <: Dependency} = free([pkg]; kwargs...)
+free(pkg::Union{AbstractString,<:Dependency}; kwargs...) = free([pkg]; kwargs...)
 free(pkgs::Vector{<:AbstractString}; kwargs...)          = free([GenericDependency(pkg) for pkg in pkgs]; kwargs...)
-free(pkgs::Vector{D}; kwargs...) where {D <: Dependency} = free(Context(), pkgs; kwargs...)
+free(pkgs::Vector{<:Dependency}; kwargs...)              = free(Context(), pkgs; kwargs...)
 
-function free(ctx::Context, pkgs::Vector{D}; kwargs...) where {D <: Dependency}
+function free(ctx::Context, pkgs::Vector{<:Dependency}; kwargs...)
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating PackageSpec members
     Context!(ctx; kwargs...)
     ctx.preview && preview_info()
@@ -225,11 +225,11 @@ function free(ctx::Context, pkgs::Vector{D}; kwargs...) where {D <: Dependency}
 end
 
 test(;kwargs...)                                         = test(Dependency[]; kwargs...)
-test(pkg::Union{AbstractString, D}; kwargs...) where {D <: Dependency} = test([pkg]; kwargs...)
+test(pkg::Union{AbstractString,<:Dependency}; kwargs...) = test([pkg]; kwargs...)
 test(pkgs::Vector{<:AbstractString}; kwargs...)          = test([GenericDependency(pkg) for pkg in pkgs]; kwargs...)
-test(pkgs::Vector{D}; kwargs...) where {D <: Dependency} = test(Context(), pkgs; kwargs...)
-function test(ctx::Context, pkgs::Vector{D};
-              coverage=false, test_fn=nothing, kwargs...) where {D <: Dependency}
+test(pkgs::Vector{<:Dependency}; kwargs...)              = test(Context(), pkgs; kwargs...)
+function test(ctx::Context, pkgs::Vector{<:Dependency};
+              coverage=false, test_fn=nothing, kwargs...)
     pkgs = deepcopy(pkgs) # deepcopy for avoid mutating PackageSpec members
     Context!(ctx; kwargs...)
     ctx.preview && preview_info()
@@ -504,11 +504,11 @@ end
 @deprecate status(mode::PackageMode) status(mode=mode)
 
 status(; mode=PKGMODE_PROJECT) = status(Dependency[]; mode=mode)
-status(pkg::Union{AbstractString,D}; mode=PKGMODE_PROJECT) where {D <: Dependency} = status([pkg]; mode=mode)
+status(pkg::Union{AbstractString,<:Dependency}; mode=PKGMODE_PROJECT) = status([pkg]; mode=mode)
 status(pkgs::Vector{<:AbstractString}; mode=PKGMODE_PROJECT) =
     status([check_package_name(pkg) for pkg in pkgs]; mode=mode)
-status(pkgs::Vector{D}; mode=PKGMODE_PROJECT) where {D <: Dependency} = status(Context(), pkgs; mode=mode)
-function status(ctx::Context, pkgs::Vector{D}; mode=PKGMODE_PROJECT) where {D <: Dependency}
+status(pkgs::Vector{<:Dependency}; mode=PKGMODE_PROJECT) = status(Context(), pkgs; mode=mode)
+function status(ctx::Context, pkgs::Vector{<:Dependency}; mode=PKGMODE_PROJECT)
     project_resolve!(ctx.env, pkgs)
     project_deps_resolve!(ctx.env, pkgs)
     manifest_resolve!(ctx.env, pkgs)
