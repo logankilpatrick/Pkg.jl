@@ -285,7 +285,7 @@ function load_deps(ctx::Context, pkg::Dependency)::Dict{String,UUID}
     end
 end
 
-function collect_project!(ctx::Context, pkg::Dependency, path::String, fix_deps_map::Dict{UUID,Vector{<:Dependency}})
+function collect_project!(ctx::Context, pkg::Dependency, path::String, fix_deps_map::Dict{UUID,Vector{D}}) where {D <: Dependency}
     fix_deps_map[pkg.uuid] = valtype(fix_deps_map)()
     project_file = projectfile_path(path; strict=true)
     (project_file === nothing) && return false
