@@ -1050,7 +1050,7 @@ function update_package_add(pkg::Dependency, entry::ManifestEntry, is_dep::Bool)
         pkg.version == VersionSpec() ||
             @warn "`$(pkg.name)` is pinned at `v$(entry.version)`. Maintaining pinned version."
         return PackageSpec(; uuid=pkg.uuid, name=pkg.name, pinned=true,
-                           version=entry.version)
+                             version=entry.version, tree_hash=entry.tree_hash)
     end
     if entry.path !== nothing || entry.repo.url !== nothing || pkg.repo.url !== nothing
         return pkg # overwrite everything, nothing to copy over
@@ -1060,7 +1060,8 @@ function update_package_add(pkg::Dependency, entry::ManifestEntry, is_dep::Bool)
     elseif is_dep && ((isa(pkg.version, VersionNumber) && entry.version == pkg.version) ||
                       (!isa(pkg.version, VersionNumber) && entry.version ∈ pkg.version))
         # leave the package as is at the installed version
-        return PackageSpec(; uuid=pkg.uuid, name=pkg.name, version=entry.version)
+        return PackageSpec(; uuid=pkg.uuid, name=pkg.name, version=entry.version,
+                             tree_hash=entry.tree_hash)
     end
     # adding a new version not compatible with the old version, so we just overwrite
     return pkg
