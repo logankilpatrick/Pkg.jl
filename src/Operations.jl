@@ -45,9 +45,6 @@ function source_path(pkg::Dependency)
         return pkg.path
     end
 
-    get_repo_url(pkg::PackageSpec) = pkg.repo.url
-    get_repo_url(pkg) = nothing
-
     if get_repo_url(pkg) !== nothing || pkg.tree_hash !== nothing
         return find_installed(pkg.name, pkg.uuid, pkg.tree_hash)
     end
@@ -63,9 +60,7 @@ function load_dep(ctx::Context, entry::Nothing, uuid, name; should_version::Bool
 end
 function load_dep(ctx::Context, entry, uuid, name; should_version::Bool=true)
     version = should_version ? something(entry.version, VersionSpec()) : VersionSpec()
-    if entry.tarball_hash != nothing
-        # If entry.tarball_hash is set, that means this manifest entry represents an Artifact
-        # We instantiate it with the currently-running platform.
+    if entry.kind == "artifact"
         artifact_info = first(load_artifact_info(ctx, ArtifactSpec(name, uuid, version)))
         tarball_hash = artifact_info["tarball-hash-sha256"]
         tree_hash = SHA1(artifact_info["git-tree-sha1"])
@@ -311,10 +306,6 @@ function collect_project!(ctx::Context, pkg::Dependency, path::String, fix_deps_
     end
     return true
 end
-
-is_fixed(pkg::PackageSpec) = pkg.path !== nothing || pkg.repo.url !== nothing
-is_fixed(pkg::ArtifactSpec) = pkg.path !== nothing
-is_fixed(pkg::Dependency) = false
 
 function collect_fixed!(ctx::Context, pkgs::Vector{<:Dependency}, names::Dict{UUID, String})
     fix_deps_map = Dict{UUID,Vector{Dependency}}()
@@ -1152,6 +1143,15 @@ end
 # if version isa VersionNumber -> set tree_hash too
 up_load_versions!(pkg::Dependency, ::Nothing, level::UpgradeLevel) = false
 function up_load_versions!(pkg::Dependency, entry::ManifestEntry, level::UpgradeLevel)
+    # We can only deal with concrete dependency types, so concretize them!
+    if pkg isa GenericDependency
+        if entry.kind == "artifact"
+            pkg = ArtifactSpec(pkg.uuid, pkg.name)
+        else
+            pkg = PackageSpec(pkg.uuid, pkg.name)
+        end
+    end
+
     entry.version !== nothing || return false # no version to set
     if entry.repo.url !== nothing # repo packages have a version but are treated special
         pkg.repo = entry.repo

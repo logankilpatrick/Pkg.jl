@@ -126,15 +126,16 @@ function Manifest(raw::Dict)::Manifest
     for (name, infos) in raw, info in infos
         # TODO is name guaranteed to be a string?
         entry = ManifestEntry()
-        entry.name     = name
-        entry.pinned   = read_pinned(get(info, "pinned", nothing))
-        uuid           = read_field("uuid",          nothing, info, safe_uuid)
-        entry.version  = read_field("version",       nothing, info, safe_version)
-        entry.path     = read_field("path",          nothing, info, safe_path)
-        entry.repo.url = read_field("repo-url",      nothing, info, identity)
-        entry.repo.rev = read_field("repo-rev",      nothing, info, identity)
-        entry.tree_hash = read_field("git-tree-sha1", nothing, info, safe_SHA1)
+        entry.name         = name
+        entry.pinned       = read_pinned(get(info, "pinned",   nothing))
+        uuid               = read_field("uuid",                nothing, info, safe_uuid)
+        entry.version      = read_field("version",             nothing, info, safe_version)
+        entry.path         = read_field("path",                nothing, info, safe_path)
+        entry.repo.url     = read_field("repo-url",            nothing, info, identity)
+        entry.repo.rev     = read_field("repo-rev",            nothing, info, identity)
+        entry.tree_hash    = read_field("git-tree-sha1",       nothing, info, safe_SHA1)
         entry.tarball_hash = read_field("tarball-hash-sha256", nothing, info, identity)
+        entry.kind         = read_field("kind",                nothing, info, identity)
         deps = read_deps(get(info, "deps", nothing))
         entry.other = info
         stage1[name] = push!(get(stage1, name, Stage1[]), Stage1(uuid, entry, deps))

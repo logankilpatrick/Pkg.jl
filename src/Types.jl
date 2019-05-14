@@ -240,6 +240,12 @@ function Base.show(io::IO, pkg::ArtifactSpec)
     print(io, ")")
 end
 
+
+# Helper getters for ArtifactSpec/PackageSpec operations
+get_repo_url(pkg::PackageSpec) = pkg.repo.url
+get_repo_url(pkg::Dependency) = nothing
+
+
 ############
 # EnvCache #
 ############
@@ -312,19 +318,21 @@ Base.@kwdef mutable struct ManifestEntry
     tarball_hash::Union{Nothing,String} = nothing
     deps::Dict{String,UUID} = Dict{String,UUID}()
     other::Union{Dict,Nothing} = nothing
+    kind::Union{String,Nothing} = nothing
 end
 const Manifest = Dict{UUID,ManifestEntry}
 
-function Base.show(io::IO, pkg::ManifestEntry)
+function Base.show(io::IO, entry::ManifestEntry)
     f = []
-    pkg.name      !== nothing && push!(f, "name"      => pkg.name)
-    pkg.version   !== nothing && push!(f, "version"   => pkg.version)
-    pkg.tree_hash !== nothing && push!(f, "tree_hash" => pkg.tree_hash)
-    pkg.tarball_hash !== nothing && push!(f, "tarball_hash" => pkg.tarball_hash)
-    pkg.path      !== nothing && push!(f, "dev/path"  => pkg.path)
-    pkg.pinned                && push!(f, "pinned"    => pkg.pinned)
-    pkg.repo.url  !== nothing && push!(f, "url/path"  => "`$(pkg.repo.url)`")
-    pkg.repo.rev  !== nothing && push!(f, "rev"       => pkg.repo.rev)
+    entry.name      !== nothing && push!(f, "name"      => entry.name)
+    entry.version   !== nothing && push!(f, "version"   => entry.version)
+    entry.tree_hash !== nothing && push!(f, "tree_hash" => entry.tree_hash)
+    entry.tarball_hash !== nothing && push!(f, "tarball_hash" => entry.tarball_hash)
+    entry.path      !== nothing && push!(f, "dev/path"  => entry.path)
+    entry.pinned                && push!(f, "pinned"    => entry.pinned)
+    entry.repo.url  !== nothing && push!(f, "url/path"  => "`$(entry.repo.url)`")
+    entry.repo.rev  !== nothing && push!(f, "rev"       => entry.repo.rev)
+    entry.kind      !== nothing && push!(f, "kind"      => entry.kind)
     print(io, "ManifestEntry(\n")
     for (field, value) in f
         print(io, "  ", field, " = ", value, "\n")
@@ -340,16 +348,15 @@ ManifestEntry(pkg::PackageSpec) = ManifestEntry(;
     path = pkg.path,
     repo = pkg.repo,
 )
-function ManifestEntry(pkg::ArtifactSpec)
-    return ManifestEntry(;
-        name = pkg.name,
-        version = pkg.version,
-        pinned = pkg.pinned,
-        tarball_hash = pkg.tarball_hash,
-        tree_hash = pkg.tree_hash,
-        path = pkg.path,
-    )
-end
+ManifestEntry(pkg::ArtifactSpec) = ManifestEntry(;
+    name = pkg.name,
+    version = pkg.version,
+    pinned = pkg.pinned,
+    tarball_hash = pkg.tarball_hash,
+    tree_hash = pkg.tree_hash,
+    path = pkg.path,
+    kind = "artifact",
+)
 ManifestEntry(pkg::GenericDependency) = ManifestEntry(;
     name = pkg.name,
     version = pkg.version,
