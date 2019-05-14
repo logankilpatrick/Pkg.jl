@@ -122,7 +122,7 @@ abstract type Dependency end;
 has_name(pkg::Dependency) = pkg.name !== nothing
 has_uuid(pkg::Dependency) = pkg.uuid !== nothing
 
-function Base.getindex(pkgs::Vector{D}, uuid::UUID) where {D <: Dependency}
+function Base.getindex(pkgs::Vector{<:Dependency}, uuid::UUID)
     index = findfirst(pkg -> pkg.uuid == uuid, pkgs)
     return index === nothing ? nothing : pkgs[index]
 end
@@ -678,7 +678,7 @@ function remote_dev_path!(ctx::Context, pkg::PackageSpec, shared::Bool)
     return pkg.uuid
 end
 
-function handle_repos_develop!(ctx::Context, pkgs::AbstractVector{D}, shared::Bool) where {D <: Dependency}
+function handle_repos_develop!(ctx::Context, pkgs::AbstractVector{<:Dependency}, shared::Bool)
     new_uuids = UUID[]
     for pkg in pkgs
         pkg.special_action = PKGSPEC_DEVELOPED
@@ -813,7 +813,7 @@ end
 Ensure repo specified by `repo` exists at version path for package
 Set tree_hash
 """
-function handle_repos_add!(ctx::Context, pkgs::AbstractVector{D}) where {D <: Dependency}
+function handle_repos_add!(ctx::Context, pkgs::AbstractVector{<:Dependency})
     new_uuids = UUID[]
     for pkg in pkgs
         handle_repo_add!(ctx, pkg) && push!(new_uuids, pkg.uuid)
@@ -892,7 +892,7 @@ end
 # Resolving packages from name or uuid #
 ########################################
 
-function project_resolve!(env::EnvCache, pkgs::AbstractVector{D}) where {D <: Dependency}
+function project_resolve!(env::EnvCache, pkgs::AbstractVector{<:Dependency})
     for pkg in pkgs
         if has_uuid(pkg) && !has_name(pkg) && Types.is_project_uuid(env, pkg.uuid)
             pkg.name = env.pkg.name
@@ -904,7 +904,7 @@ function project_resolve!(env::EnvCache, pkgs::AbstractVector{D}) where {D <: De
 end
 
 # Disambiguate name/uuid package specifications using project info.
-function project_deps_resolve!(env::EnvCache, pkgs::AbstractVector{D}) where {D <: Dependency}
+function project_deps_resolve!(env::EnvCache, pkgs::AbstractVector{<:Dependency})
     uuids = env.project.deps
     names = Dict(uuid => name for (name, uuid) in uuids)
     for pkg in pkgs
@@ -919,7 +919,7 @@ function project_deps_resolve!(env::EnvCache, pkgs::AbstractVector{D}) where {D 
 end
 
 # Disambiguate name/uuid package specifications using manifest info.
-function manifest_resolve!(env::EnvCache, pkgs::AbstractVector{D}) where {D <: Dependency}
+function manifest_resolve!(env::EnvCache, pkgs::AbstractVector{<:Dependency})
     uuids = Dict{String,Vector{UUID}}()
     names = Dict{UUID,String}()
     for (uuid, entry) in env.manifest
@@ -975,8 +975,8 @@ end
 
 # Ensure that all packages are fully resolved
 function ensure_resolved(env::EnvCache,
-    pkgs::AbstractVector{D};
-    registry::Bool=false,)::Nothing where {D <: Dependency}
+    pkgs::AbstractVector{<:Dependency};
+    registry::Bool=false,)::Nothing
     unresolved = Dict{String,Vector{UUID}}()
     for name in [pkg.name for pkg in pkgs if !has_uuid(pkg)]
         uuids = [uuid for (uuid, entry) in env.manifest if entry.name == name]

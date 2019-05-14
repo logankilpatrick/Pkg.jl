@@ -31,8 +31,8 @@ function git_file_stream(repo::LibGit2.GitRepo, spec::String; fakeit::Bool=false
     return iob
 end
 
-function status(ctx::Context, pkgs::Vector{D}=Dependency[];
-                mode::PackageMode=PKGMODE_PROJECT, use_as_api=false) where {D <: Dependency}
+function status(ctx::Context, pkgs::Vector{<:Dependency}=Dependency[];
+                mode::PackageMode=PKGMODE_PROJECT, use_as_api=false)
     env = ctx.env
     project₀ = project₁ = env.project
     manifest₀ = manifest₁ = env.manifest
