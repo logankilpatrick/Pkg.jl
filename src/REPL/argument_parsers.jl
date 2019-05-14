@@ -4,7 +4,7 @@
 """
 Parser for PackageSpec objects.
 """
-function parse_package(args::Vector{QString}; valid=[], add_or_dev=false)::Vector{PackageSpec}
+function parse_package(args::Vector{QString}; valid=[], add_or_dev=false)::Vector{Dependency}
     args::Vector{PackageToken} = map(PackageToken, package_lex(args))
     push!(valid, String) # always want at least PkgSpec identifiers
     all(x->typeof(x) in valid, args) || pkgerror("invalid token") # allow only valid tokens
@@ -35,9 +35,9 @@ PackageToken(word::String)::PackageToken =
     first(word) == '#' ? Rev(word[2:end]) :
     String(word)
 
-function parse_package_args(args::Vector{PackageToken}; add_or_dev=false)::Vector{PackageSpec}
+function parse_package_args(args::Vector{PackageToken}; add_or_dev=false)::Vector{Dependency}
     # check for and apply PackageSpec modifier (e.g. `#foo` or `@v1.0.2`)
-    function apply_modifier!(pkg::PackageSpec, args::Vector{PackageToken})
+    function apply_modifier!(pkg::Dependency, args::Vector{PackageToken})
         (isempty(args) || args[1] isa PackageIdentifier) && return
         modifier = popfirst!(args)
         if modifier isa VersionRange
@@ -47,7 +47,7 @@ function parse_package_args(args::Vector{PackageToken}; add_or_dev=false)::Vecto
         end
     end
 
-    pkgs = PackageSpec[]
+    pkgs = Dependency[]
     while !isempty(args)
         arg = popfirst!(args)
         if arg isa PackageIdentifier
@@ -72,19 +72,19 @@ let uuid = raw"(?i)[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}(
 end
 # packages can be identified through: uuid, name, or name+uuid
 # additionally valid for add/develop are: local path, url
-function parse_package_identifier(word::AbstractString; add_or_develop=false)::PackageSpec
+function parse_package_identifier(word::AbstractString; add_or_develop=false)::Dependency
     if add_or_develop && casesensitive_isdir(expanduser(word))
         if !occursin(Base.Filesystem.path_separator_re, word)
             @info "resolving package identifier `$word` as a directory at `$(Base.contractuser(abspath(word)))`."
         end
         return PackageSpec(repo=Types.GitRepo(url=expanduser(word)))
     elseif occursin(uuid_re, word)
-        return PackageSpec(uuid=UUID(word))
+        return GenericDependency(uuid=UUID(word))
     elseif occursin(name_re, word)
-        return PackageSpec(String(match(name_re, word).captures[1]))
+        return GenericDependency(String(match(name_re, word).captures[1]))
     elseif occursin(name_uuid_re, word)
         m = match(name_uuid_re, word)
-        return PackageSpec(String(m.captures[1]), UUID(m.captures[2]))
+        return GenericDependency(String(m.captures[1]), UUID(m.captures[2]))
     elseif add_or_develop
         # Guess it is a url then
         return PackageSpec(repo=Types.GitRepo(url=word))

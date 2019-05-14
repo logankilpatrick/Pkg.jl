@@ -473,6 +473,7 @@ function instantiate(ctx::Context; manifest::Union{Bool, Nothing}=nothing,
     Operations.check_registered(ctx, pkgs)
     new_git = UUID[]
     for pkg in pkgs
+        pkg isa ArtifactSpec && continue
         pkg.repo.url !== nothing || continue
         instantiate_pkg_repo!(pkg) && push!(new_git, pkg.uuid)
     end
@@ -575,6 +576,15 @@ function activate(path::AbstractString; shared::Bool=false)
     p = Base.active_project()
     p === nothing || @info("activating$(ispath(p) ? "" : " new") environment at $(pathrepr(p)).")
     return nothing
+end
+function activate(f::Function, args...; kwargs...)
+    p = Base.active_project()
+    try
+        Pkg.activate(args...; kwargs...)
+        f()
+    finally
+        Pkg.activate(p)
+    end
 end
 
 function setprotocol!(;

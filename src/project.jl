@@ -140,8 +140,15 @@ function read_project(io::IO; path=nothing)
     return Project(raw)
 end
 
-read_project(path::String) =
-    isfile(path) ? open(io->read_project(io;path=path), path) : Project()
+function read_project(path::String)
+    if isfile(path)
+        return open(path) do io
+            return read_project(io; path=path)
+        end
+    else
+        return Project()
+    end
+end
 
 ###########
 # WRITING #

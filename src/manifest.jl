@@ -134,7 +134,7 @@ function Manifest(raw::Dict)::Manifest
         entry.repo.url = read_field("repo-url",      nothing, info, identity)
         entry.repo.rev = read_field("repo-rev",      nothing, info, identity)
         entry.tree_hash = read_field("git-tree-sha1", nothing, info, safe_SHA1)
-        entry.platform = read_field("platform",      nothing, info, safe_platform_key_abi)
+        entry.tarball_hash = read_field("tarball-hash-sha256", nothing, info, identity)
         deps = read_deps(get(info, "deps", nothing))
         entry.other = info
         stage1[name] = push!(get(stage1, name, Stage1[]), Stage1(uuid, entry, deps))
@@ -186,6 +186,7 @@ function destructure(manifest::Manifest)::Dict
         new_entry["uuid"] = string(uuid)
         entry!(new_entry, "version", entry.version)
         entry!(new_entry, "git-tree-sha1", entry.tree_hash)
+        entry!(new_entry, "tarball-hash-sha256", entry.tarball_hash)
         entry!(new_entry, "pinned", entry.pinned; default=false)
         path = entry.path
         if path !== nothing && Sys.iswindows() && !isabspath(path)

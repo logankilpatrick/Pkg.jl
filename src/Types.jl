@@ -12,7 +12,7 @@ using REPL.TerminalMenus
 
 using ..TOML
 import ..Pkg, ..UPDATED_REGISTRY_THIS_SESSION
-import Pkg: GitTools, depots, depots1, logdir, Platform, platform_key_abi
+import Pkg: GitTools, depots, depots1, logdir, Platform, platform_key_abi, triplet, UnknownPlatform
 
 import Base: SHA1
 using SHA
@@ -211,6 +211,8 @@ Base.@kwdef mutable struct ArtifactSpec <: Dependency
     name::Union{Nothing,String} = nothing
     uuid::Union{Nothing,UUID} = nothing
     version::VersionTypes = VersionSpec()
+    tree_hash::Union{Nothing,SHA1} = nothing
+    tarball_hash::Union{Nothing,String} = nothing
     path::Union{Nothing,String} = nothing
     pinned::Bool = false
     special_action::PackageSpecialAction = PKGSPEC_NOTHING # If the package is currently being pinned, freed etc
@@ -226,6 +228,8 @@ function Base.show(io::IO, pkg::ArtifactSpec)
     f = []
     pkg.name !== nothing && push!(f, "name" => pkg.name)
     pkg.uuid !== nothing && push!(f, "uuid" => pkg.uuid)
+    pkg.tree_hash !== nothing && push!(f, "tree_hash" => pkg.tree_hash)
+    pkg.tarball_hash !== nothing && push!(f, "tarball_hash" => pkg.tree_hash)
     pkg.path !== nothing && push!(f, "dev/path" => pkg.path)
     pkg.pinned && push!(f, "pinned" => pkg.pinned)
     push!(f, "version" => (vstr == "VersionSpec(\"*\")" ? "*" : vstr))
@@ -305,7 +309,7 @@ Base.@kwdef mutable struct ManifestEntry
     pinned::Bool = false
     repo::GitRepo = GitRepo()
     tree_hash::Union{Nothing,SHA1} = nothing
-    platform::Union{Nothing,Platform} = nothing
+    tarball_hash::Union{Nothing,String} = nothing
     deps::Dict{String,UUID} = Dict{String,UUID}()
     other::Union{Dict,Nothing} = nothing
 end
@@ -316,7 +320,7 @@ function Base.show(io::IO, pkg::ManifestEntry)
     pkg.name      !== nothing && push!(f, "name"      => pkg.name)
     pkg.version   !== nothing && push!(f, "version"   => pkg.version)
     pkg.tree_hash !== nothing && push!(f, "tree_hash" => pkg.tree_hash)
-    pkg.platform  !== nothing && push!(f, "platform"  => pkg.platform)
+    pkg.tarball_hash !== nothing && push!(f, "tarball_hash" => pkg.tarball_hash)
     pkg.path      !== nothing && push!(f, "dev/path"  => pkg.path)
     pkg.pinned                && push!(f, "pinned"    => pkg.pinned)
     pkg.repo.url  !== nothing && push!(f, "url/path"  => "`$(pkg.repo.url)`")
@@ -336,13 +340,16 @@ ManifestEntry(pkg::PackageSpec) = ManifestEntry(;
     path = pkg.path,
     repo = pkg.repo,
 )
-ManifestEntry(pkg::ArtifactSpec; platform = platform_key_abi()) = ManifestEntry(;
-    name = pkg.name,
-    version = pkg.version,
-    pinned = pkg.pinned,
-    platform = platform,
-    path = pkg.path,
-)
+function ManifestEntry(pkg::ArtifactSpec)
+    return ManifestEntry(;
+        name = pkg.name,
+        version = pkg.version,
+        pinned = pkg.pinned,
+        tarball_hash = pkg.tarball_hash,
+        tree_hash = pkg.tree_hash,
+        path = pkg.path,
+    )
+end
 ManifestEntry(pkg::GenericDependency) = ManifestEntry(;
     name = pkg.name,
     version = pkg.version,
