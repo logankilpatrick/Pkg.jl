@@ -750,8 +750,7 @@ function detect_cxxstring_abi()
             hdl = Libdl.dlopen_e(lib_name)
             if hdl != C_NULL
                 try
-                    f(hdl)
-                    return
+                    return f(hdl)
                 finally
                     Libdl.dlclose(hdl)
                 end
