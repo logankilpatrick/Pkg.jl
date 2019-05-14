@@ -481,26 +481,6 @@ function instantiate(ctx::Context; manifest::Union{Bool, Nothing}=nothing,
     Operations.build_versions(ctx, union(new_apply, new_git))
 end
 
-function state_dir(ctx::Context = Context(), keys...; julia_version_specific::Bool = true, ABI_specific::Bool = true)
-    h = UInt64(0)
-    for k in keys
-        h = hash(k, h)
-    end
-    if julia_version_specific
-        h = hash(Base.VERSION, h)
-    end
-
-    if ABI_specific
-        # We would perhaps want to integrate this logic into Pkg
-        h = hash(triplet(platform_key_abi()), h)
-    end
-
-    # Convert hash to Pkg "slug"
-    data_slug = slug(UInt32(h & 0xffffffff), 5)
-
-    return joinpath(depots1(), "package_data", data_slug)
-end
-
 @deprecate status(mode::PackageMode) status(mode=mode)
 
 status(; mode=PKGMODE_PROJECT) = status(Dependency[]; mode=mode)
