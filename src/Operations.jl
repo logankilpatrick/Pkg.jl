@@ -336,6 +336,10 @@ function collect_fixed!(ctx::Context, pkgs::Vector{<:Dependency}, names::Dict{UU
     return fixed
 end
 
+is_fixed(pkg::PackageSpec) = pkg.path !== nothing || pkg.repo.url !== nothing
+is_fixed(pkg::ArtifactSpec) = pkg.path !== nothing
+is_fixed(pkg::Dependency) = false
+
 # Resolve a set of versions given package version specs
 # looks at uuid, version, repo/path,
 # sets version to a VersionNumber
@@ -356,7 +360,7 @@ function resolve_versions!(ctx::Context, pkgs::Vector{Dependency})
 
     # construct data structures for resolver and call it
     # this also sets pkg.version for fixed packages
-    fixed = collect_fixed!(ctx, filter(p -> p.path != nothing || get_repo_url(p) != nothing, pkgs), names)
+    fixed = collect_fixed!(ctx, filter(is_fixed, pkgs), names)
 
     # non fixed packages are `add`ed by version: their version is either restricted or free
     # fixed packages are `dev`ed or `add`ed by repo
