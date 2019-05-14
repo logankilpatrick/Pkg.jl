@@ -31,13 +31,13 @@ struct CompilerABI
     function CompilerABI(;libgfortran_version::Union{Nothing, VersionNumber} = nothing,
                          libstdcxx_version::Union{Nothing, VersionNumber} = nothing,
                          cxxstring_abi::Union{Nothing, Symbol} = nothing)
-        if libgfortran_version != nothing && libgfortran_version < v"3" &&
-                                             libgfortran_version >= v"6"
+        if libgfortran_version != nothing && (libgfortran_version < v"3" ||
+                                              libgfortran_version >= v"6")
             throw(ArgumentError("Unsupported libgfortran '$libgfortran_version'"))
         end
 
-        if libstdcxx_version != nothing && libstdcxx_version < v"3.4.0" &&
-                                        libstdcxx_version >= v"3.5"
+        if libstdcxx_version != nothing && (libstdcxx_version < v"3.4.0" ||
+                                            libstdcxx_version >= v"3.5")
             throw(ArgumentError("Unsupported libstdc++ '$libstdcxx_version'"))
         end
 
@@ -539,7 +539,7 @@ function platform_key_abi(machine::AbstractString)
                     if startswith(strk, "libgfortran")
                         return VersionNumber(parse(Int,strk[12:end]))
                     elseif startswith(strk, "libstdcxx")
-                        return VersionNumber(parse(Int,strk[10:end]))
+                        return VersionNumber(3, 4, parse(Int,strk[10:end]))
                     else
                         return k
                     end
