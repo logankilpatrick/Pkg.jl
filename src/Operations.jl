@@ -1146,9 +1146,9 @@ function up_load_versions!(pkg::Dependency, entry::ManifestEntry, level::Upgrade
     # We can only deal with concrete dependency types, so concretize them!
     if pkg isa GenericDependency
         if entry.kind == "artifact"
-            pkg = ArtifactSpec(pkg.uuid, pkg.name)
+            pkg = ArtifactSpec(pkg.name, pkg.uuid)
         else
-            pkg = PackageSpec(pkg.uuid, pkg.name)
+            pkg = PackageSpec(pkg.name, pkg.uuid)
         end
     end
 
