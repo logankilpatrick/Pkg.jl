@@ -27,7 +27,7 @@ export UUID, pkgID, SHA1, VersionRange, VersionSpec, empty_versionspec,
     PackageMode, PKGMODE_MANIFEST, PKGMODE_PROJECT, PKGMODE_COMBINED,
     UpgradeLevel, UPLEVEL_FIXED, UPLEVEL_PATCH, UPLEVEL_MINOR, UPLEVEL_MAJOR,
     PackageSpecialAction, PKGSPEC_NOTHING, PKGSPEC_PINNED, PKGSPEC_FREED, PKGSPEC_DEVELOPED, PKGSPEC_TESTED, PKGSPEC_REPO_ADDED,
-    printpkgstyle,
+    printpkgstyle, concretize_dependency, concretize_dependencies,
     projectfile_path, manifestfile_path,
     RegistrySpec
 
@@ -138,11 +138,15 @@ end
 
 const VersionTypes = Union{VersionNumber,VersionSpec,UpgradeLevel}
 
+# A GenericDependency is a dependency that we don't know whether it's a Package or
+# an Artifact yet.
 Base.@kwdef mutable struct GenericDependency <: Dependency
     name::Union{Nothing,String} = nothing
     uuid::Union{Nothing,UUID} = nothing
     version::VersionTypes = VersionSpec()
+    path::Union{Nothing,String} = nothing
     mode::PackageMode = PKGMODE_PROJECT
+    special_action::PackageSpecialAction = PKGSPEC_NOTHING # If the package is currently being pinned, freed etc
 end
 
 GenericDependency(name::AbstractString) = GenericDependency(;name=name)
@@ -179,29 +183,14 @@ PackageSpec(name::AbstractString) = PackageSpec(;name=name)
 PackageSpec(name::AbstractString, uuid::UUID) = PackageSpec(;name=name, uuid=uuid)
 PackageSpec(name::AbstractString, version::VersionTypes) = PackageSpec(;name=name, version=version)
 PackageSpec(n::AbstractString, u::UUID, v::VersionTypes) = PackageSpec(;name=n, uuid=u, version=v)
-
-function Base.show(io::IO, pkg::PackageSpec)
-    vstr = repr(pkg.version)
-    f = []
-    pkg.name !== nothing && push!(f, "name" => pkg.name)
-    pkg.uuid !== nothing && push!(f, "uuid" => pkg.uuid)
-    pkg.tree_hash !== nothing && push!(f, "tree_hash" => pkg.tree_hash)
-    pkg.path !== nothing && push!(f, "dev/path" => pkg.path)
-    pkg.pinned && push!(f, "pinned" => pkg.pinned)
-    push!(f, "version" => (vstr == "VersionSpec(\"*\")" ? "*" : vstr))
-    if pkg.repo.url !== nothing
-        push!(f, "url/path" => string("\"", pkg.repo.url, "\""))
-    end
-    if pkg.repo.rev !== nothing
-        push!(f, "rev" => pkg.repo.rev)
-    end
-    print(io, "$(typeof(pkg))(\n")
-    for (field, value) in f
-        print(io, "  ", field, " = ", value, "\n")
-    end
-    print(io, ")")
-end
-
+PackageSpec(pkg::GenericDependency) = PackageSpec(;
+    name=pkg.name,
+    uuid=pkg.uuid,
+    version=pkg.version,
+    path=pkg.path,
+    mode=pkg.mode,
+    special_action=pkg.special_action
+)
 
 ################
 # ArtifactSpec #
@@ -222,17 +211,31 @@ ArtifactSpec(name::AbstractString) = ArtifactSpec(;name=name)
 ArtifactSpec(name::AbstractString, uuid::UUID) = ArtifactSpec(;name=name, uuid=uuid)
 ArtifactSpec(name::AbstractString, version::VersionTypes) = ArtifactSpec(;name=name, version=version)
 ArtifactSpec(n::AbstractString, u::UUID, v::VersionTypes) = ArtifactSpec(;name=n, uuid=u, version=v)
+ArtifactSpec(pkg::GenericDependency) = ArtifactSpec(;
+    name=pkg.name,
+    uuid=pkg.uuid,
+    version=pkg.version,
+    path=pkg.path,
+    mode=pkg.mode,
+    special_action=pkg.special_action
+)
 
-function Base.show(io::IO, pkg::ArtifactSpec)
+function Base.show(io::IO, pkg::Dependency)
     vstr = repr(pkg.version)
     f = []
     pkg.name !== nothing && push!(f, "name" => pkg.name)
     pkg.uuid !== nothing && push!(f, "uuid" => pkg.uuid)
-    pkg.tree_hash !== nothing && push!(f, "tree_hash" => pkg.tree_hash)
-    pkg.tarball_hash !== nothing && push!(f, "tarball_hash" => pkg.tree_hash)
+    !isa(pkg, GenericDependency) && pkg.tree_hash !== nothing && push!(f, "tree_hash" => pkg.tree_hash)
+    isa(pkg, ArtifactSpec) && pkg.tarball_hash !== nothing && push!(f, "tarball_hash" => pkg.tree_hash)
     pkg.path !== nothing && push!(f, "dev/path" => pkg.path)
-    pkg.pinned && push!(f, "pinned" => pkg.pinned)
+    !isa(pkg, GenericDependency) && pkg.pinned && push!(f, "pinned" => pkg.pinned)
     push!(f, "version" => (vstr == "VersionSpec(\"*\")" ? "*" : vstr))
+    if isa(pkg, PackageSpec) && pkg.repo.url !== nothing
+        push!(f, "url/path" => string("\"", pkg.repo.url, "\""))
+    end
+    if isa(pkg, PackageSpec) && pkg.repo.rev !== nothing
+        push!(f, "rev" => pkg.repo.rev)
+    end
     print(io, "$(typeof(pkg))(\n")
     for (field, value) in f
         print(io, "  ", field, " = ", value, "\n")
@@ -244,7 +247,6 @@ end
 # Helper getters for ArtifactSpec/PackageSpec operations
 get_repo_url(pkg::PackageSpec) = pkg.repo.url
 get_repo_url(pkg::Dependency) = nothing
-
 
 ############
 # EnvCache #
@@ -445,7 +447,7 @@ end
 project_uuid(env::EnvCache) = env.pkg === nothing ? nothing : env.pkg.uuid
 collides_with_project(env::EnvCache, pkg::D) where {D <: Dependency} =
     is_project_name(env, pkg.name) || is_project_uuid(env, pkg.uuid)
-is_project(env::EnvCache, pkg::PackageSpec) = is_project_uuid(env, pkg.uuid)
+is_project(env::EnvCache, pkg::Dependency) = is_project_uuid(env, pkg.uuid)
 is_project_name(env::EnvCache, name::String) =
     env.pkg !== nothing && env.pkg.name == name
 is_project_uuid(env::EnvCache, uuid::UUID) = project_uuid(env) == uuid
@@ -612,13 +614,13 @@ end
 # - Absolute paths should stay absolute
 # - Relative paths are given relative pwd() so we
 #   translate that to be relative the project instead.
-function explicit_dev_path(ctx::Context, pkg::PackageSpec)
+function explicit_dev_path(ctx::Context, pkg::Dependency)
     path = pkg.repo.url
     pkg.path = isabspath(path) ? path : relative_project_path(ctx, path)
     parse_package!(ctx, pkg, path)
 end
 
-function canonical_dev_path!(ctx::Context, pkg::PackageSpec, shared::Bool; default=nothing)
+function canonical_dev_path!(ctx::Context, pkg::Dependency, shared::Bool; default=nothing)
     dev_dir = shared ? Pkg.devdir() : joinpath(dirname(ctx.env.project_file), "dev")
     dev_path = joinpath(dev_dir, pkg.name)
 
@@ -637,6 +639,43 @@ function canonical_dev_path!(ctx::Context, pkg::PackageSpec, shared::Bool; defau
         pkg.path = shared ? dev_path : relative_project_path(ctx, dev_path)
     end
 end
+
+
+# Helpers to concretize a Dependency into either a PackageSpec or an ArtifactSpec, given
+# a Manifest Entry that tells us which one is which
+concretize_dependency(ctx::Context, pkg::Dependency) = pkg
+function concretize_dependency(ctx::Context, pkg::GenericDependency)
+    if !has_uuid(pkg)
+        registry_resolve!(ctx.env, pkg)
+        ensure_resolved(ctx.env, [pkg]; registry=true)
+    end
+
+    # Look to see if it's in our manifest
+    entry = manifest_info(ctx.env, pkg.uuid)
+    if entry != nothing
+        if entry.kind == "artifact"
+            return ArtifactSpec(pkg)
+        else
+            return PackageSpec(pkg)
+        end
+    end
+
+    # If it's not, reach out to our buddies working in the Registry,
+    # see if they've heard of this bloke
+    for p in registered_paths(ctx.env, pkg.uuid)
+        if isfile(joinpath(p, "Artifact.toml"))
+            return ArtifactSpec(pkg)
+        elseif isfile(joinpath(p, "Package.toml"))
+            return PackageSpec(pkg)
+        end
+    end
+
+    # Couldn't concretize; just return `pkg` as it was
+    return pkg
+end
+concretize_dependencies(ctx::Context, pkgs::Vector{<:Dependency}) = 
+    Dependency[concretize_dependency(ctx, pkg) for pkg in pkgs]
+
 
 function fresh_clone(pkg::PackageSpec)
     clone_path = joinpath(depots1(), "clones")
@@ -659,7 +698,7 @@ function fresh_clone(pkg::PackageSpec)
     return temp_repo
 end
 
-function remote_dev_path!(ctx::Context, pkg::PackageSpec, shared::Bool)
+function remote_dev_path!(ctx::Context, pkg::Dependency, shared::Bool)
     # Only update the registry in case of developing a non-local package
     update_registries(ctx)
     # We save the repo in case another environement wants to develop from the same repo,
@@ -682,7 +721,7 @@ function handle_repos_develop!(ctx::Context, pkgs::AbstractVector{<:Dependency},
     new_uuids = UUID[]
     for pkg in pkgs
         pkg.special_action = PKGSPEC_DEVELOPED
-        if pkg.repo.url !== nothing && isdir_windows_workaround(pkg.repo.url)
+        if get_repo_url(pkg) !== nothing && isdir_windows_workaround(get_repo_url(pkg))
             explicit_dev_path(ctx, pkg)
         elseif pkg.name !== nothing
             canonical_dev_path!(ctx, pkg, shared)

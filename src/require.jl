@@ -21,7 +21,7 @@ end
 
 
 # Backwards compatibility with Pkg2 REQUIRE format
-function collect_require!(ctx::Context, pkg::PackageSpec, path::String, fix_deps_map::Dict{UUID,Vector{PackageSpec}})
+function collect_require!(ctx::Context, pkg::Dependency, path::String, fix_deps_map::Dict{UUID,Vector{D}}) where {D <: Dependency}
     fix_deps = PackageSpec[]
     reqfile = joinpath(path, "REQUIRE")
     # Checked out "old-school" packages have by definition a version higher than all registered.

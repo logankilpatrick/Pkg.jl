@@ -39,11 +39,14 @@ function develop(ctx::Context, pkgs::Vector{<:Dependency};
     pkgs = deepcopy(pkgs) # deepcopy for avoid mutating PackageSpec members
     Context!(ctx; kwargs...)
 
+    pkgs = concretize_dependencies(ctx, pkgs)
     for pkg in pkgs
         # if julia is passed as a package the solver gets tricked
         pkg.name != "julia" || pkgerror("Trying to develop julia as a package")
-        pkg.repo.rev === nothing || pkgerror("git revision can not be given to `develop`")
-        pkg.name !== nothing || pkg.uuid !== nothing || pkg.repo.url !== nothing ||
+        if isa(pkg, PackageSpec) && pkg.repo.rev != nothing 
+            pkgerror("git revision can not be given to `develop`")
+        end
+        pkg.name !== nothing || pkg.uuid !== nothing || (isa(pkg, PackageSpec) && pkg.repo.url !== nothing) ||
             pkgerror("A package must be specified by `name`, `uuid`, `url`, or `path`.")
         pkg.version == VersionSpec() ||
             pkgerror("Can not specify version when tracking a repo.")
@@ -112,7 +115,7 @@ function rm(ctx::Context, pkgs::Vector{<:Dependency}; mode=PKGMODE_PROJECT, kwar
     for pkg in pkgs
         pkg.name !== nothing || pkg.uuid !== nothing ||
             pkgerror("Must specify package by either `name` or `uuid`.")
-        if !(pkg.version == VersionSpec() && pkg.pinned == false &&
+        if isa(pkg, PackageSpec) && !(pkg.version == VersionSpec() && pkg.pinned == false &&
              pkg.tree_hash === nothing && pkg.repo.url === nothing &&
              pkg.repo.rev === nothing && pkg.path === nothing)
             pkgerror("Package may only be specified by either `name` or `uuid`")
@@ -208,7 +211,7 @@ function free(ctx::Context, pkgs::Vector{<:Dependency}; kwargs...)
     for pkg in pkgs
         pkg.name !== nothing || pkg.uuid !== nothing ||
             pkgerror("Must specify package by either `name` or `uuid`.")
-        if !(pkg.version == VersionSpec() && pkg.pinned == false &&
+        if isa(pkg, PackageSpec) && !(pkg.version == VersionSpec() && pkg.pinned == false &&
              pkg.tree_hash === nothing && pkg.repo.url === nothing &&
              pkg.repo.rev === nothing && pkg.path === nothing)
             pkgerror("Package may only be specified by either `name` or `uuid`")
@@ -374,11 +377,11 @@ function gc(ctx::Context=Context(); kwargs...)
     return
 end
 
-build(pkgs...; kwargs...) = build([GenericDependency(pkg) for pkg in pkgs]; kwargs...)
+build(pkgs...; kwargs...) = build(Dependency[GenericDependency(pkg) for pkg in pkgs]; kwargs...)
 build(pkg::Array{Union{}, 1}; kwargs...) = build(Dependency[]; kwargs...)
 build(pkg::Dependency; kwargs...) = build([pkg]; kwargs...)
-build(pkgs::Vector{Dependency}; kwargs...) = build(Context(), pkgs; kwargs...)
-function build(ctx::Context, pkgs::Vector{Dependency}; verbose=false, kwargs...)
+build(pkgs::Vector{<:Dependency}; kwargs...) = build(Context(), pkgs; kwargs...)
+function build(ctx::Context, pkgs::Vector{<:Dependency}; verbose=false, kwargs...)
     pkgs = deepcopy(pkgs)  # deepcopy for avoid mutating Dependency members
     Context!(ctx; kwargs...)
 

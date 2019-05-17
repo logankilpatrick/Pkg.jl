@@ -34,8 +34,8 @@ end
 # the only way to know for sure is to key into the registries
 tracking_registered_version(pkg::PackageSpec) =
     !is_stdlib(pkg.uuid) && pkg.path === nothing && pkg.repo.url === nothing
+tracking_registered_version(pkg::Dependency) = !is_stdlib(pkg.uuid)
 tracking_registered_version(pkg::ArtifactSpec) = !is_stdlib(pkg.uuid) && pkg.path === nothing
-tracking_registered_version(pkg::Dependency) = true
 
 function source_path(pkg::Dependency)
     if is_stdlib(pkg.uuid)
@@ -88,7 +88,7 @@ function load_dep(ctx::Context, entry, uuid, name; should_version::Bool=true)
     end
 end
 
-function load_direct_deps!(ctx::Context, pkgs::Vector{Dependency}; should_version::Bool=true)
+function load_direct_deps!(ctx::Context, pkgs::Vector{<:Dependency}; should_version::Bool=true)
     # load rest of deps normally
     for (name::String, uuid::UUID) in ctx.env.project.deps
         pkgs[uuid] === nothing || continue # dont duplicate packages
@@ -345,7 +345,7 @@ is_fixed(pkg::Dependency) = false
 # sets version to a VersionNumber
 # adds any other packages which may be in the dependency graph
 # all versioned packges should have a `tree_hash`
-function resolve_versions!(ctx::Context, pkgs::Vector{Dependency})
+function resolve_versions!(ctx::Context, pkgs::Vector{<:Dependency})
     printpkgstyle(ctx, :Resolving, "package versions...")
     # compatibility
     proj_compat = Types.project_compatibility(ctx, "julia")
@@ -389,9 +389,6 @@ function resolve_versions!(ctx::Context, pkgs::Vector{Dependency})
     simplify_graph!(graph)
     vers = resolve(graph)
 
-    # We need to hit the filesystem to see if things are artifacts or packages
-    is_artifact(uuid) = any(isfile(joinpath(p, "Artifact.toml")) for p in registered_paths(ctx.env, uuid))
-
     find_registered!(ctx.env, collect(keys(vers)))
     # update vector of package versions
     for (uuid, ver) in vers
@@ -406,15 +403,14 @@ function resolve_versions!(ctx::Context, pkgs::Vector{Dependency})
         # for Artifact.toml.  We don't want generic dependencies after a resolve finishes.
         if idx === nothing || isa(pkgs[idx], GenericDependency)
             name = (uuid in keys(ctx.stdlibs)) ? ctx.stdlibs[uuid] : registered_name(ctx.env, uuid)
-            if is_artifact(uuid)
+            new_pkg = concretize_dependency(ctx, GenericDependency(;name=name,uuid=uuid,version=ver))
+
+            if new_pkg isa ArtifactSpec
                 # For artifacts, we need to jump through an extra hoop to instantiate the tree hash
                 # and tarball hash for the particular version and currently-running platform.
-                new_pkg = ArtifactSpec(;name=name,uuid=uuid,version=ver)
                 artifact_info = first(load_artifact_info(ctx, new_pkg))
                 new_pkg.tree_hash = SHA1(artifact_info["git-tree-sha1"])
                 new_pkg.tarball_hash = artifact_info["tarball-hash-sha256"]
-            else
-                new_pkg = PackageSpec(;name=name, uuid=uuid, version=ver)
             end
 
             # If this was a new package that `resolve!()` "discovered", then push it onto the end.
@@ -610,9 +606,8 @@ function install_archive(
     version_path::String;
     verbose::Bool = false,
 )::Bool
-    hash = pkg.hash
     for url in urls
-        archive_url = get_archive_url_for_version(url, hash)
+        archive_url = get_archive_url_for_version(url, pkg.tree_hash)
         if archive_url === nothing
             continue
         end
@@ -837,26 +832,26 @@ end
 #########
 # Build #
 #########
-function _get_deps!(ctx::Context, pkgs::Vector{PackageSpec}, uuids::Vector{UUID})
+function _get_deps!(ctx::Context, pkgs::Vector{<:Dependency}, uuids::Vector{UUID})
     for pkg in pkgs
         pkg.uuid in keys(ctx.stdlibs) && continue
         pkg.uuid in uuids && continue
         push!(uuids, pkg.uuid)
         if Types.is_project(ctx.env, pkg)
-            pkgs = [PackageSpec(name, uuid) for (name, uuid) in ctx.env.project.deps]
+            pkgs = [GenericDependency(name, uuid) for (name, uuid) in ctx.env.project.deps]
         else
             info = manifest_info(ctx.env, pkg.uuid)
             if info === nothing
                 pkgerror("could not find manifest info for package with uuid: $(pkg.uuid)")
             end
-            pkgs = [PackageSpec(name, uuid) for (name, uuid) in info.deps]
+            pkgs = [GenericDependency(name, uuid) for (name, uuid) in info.deps]
         end
         _get_deps!(ctx, pkgs, uuids)
     end
     return
 end
 
-function build(ctx::Context, pkgs::Vector{PackageSpec}, verbose::Bool)
+function build(ctx::Context, pkgs::Vector{<:Dependency}, verbose::Bool)
     if !ctx.preview && (any_package_not_installed(ctx) || !isfile(ctx.env.manifest_file))
         Pkg.instantiate(ctx)
     end
@@ -979,7 +974,7 @@ end
 ##############
 # Operations #
 ##############
-function rm(ctx::Context, pkgs::Vector{PackageSpec})
+function rm(ctx::Context, pkgs::Vector{<:Dependency})
     drop = UUID[]
     # find manifest-mode drops
     for pkg in pkgs
@@ -1129,6 +1124,7 @@ end
 # Input: name, uuid, and path
 function develop(ctx::Context, pkgs::Vector{<:Dependency}, new_git::Vector{UUID};
                  keep_manifest::Bool=false)
+    pkgs = Dependency[p for p in pkgs]
     assert_can_add(ctx, pkgs)
     # no need to look at manifest.. dev will just nuke whatever is there before
     for pkg in pkgs
@@ -1143,15 +1139,6 @@ function develop(ctx::Context, pkgs::Vector{<:Dependency}, new_git::Vector{UUID}
     new_apply = download_source(ctx, pkgs; readonly=false)
     write_env(ctx) # write env before building
     build_versions(ctx, union(new_apply, new_git))
-end
-
-concretize_dependency(pkg::Dependency, entry) = pkg
-function concretize_dependency(pkg::GenericDependency, entry::ManifestEntry)
-    if entry.kind == "artifact"
-        return ArtifactSpec(pkg.name, pkg.uuid)
-    else
-        return PackageSpec(pkg.name, pkg.uuid)
-    end
 end
 
 # load version constraint
@@ -1202,17 +1189,12 @@ function up(ctx::Context, pkgs::Vector{<:Dependency}, level::UpgradeLevel)
     # TODO check all pkg.version == VersionSpec()
     # set version constraints according to `level`
 
-    # Purposefully widen so that we can concretize our packages
-    pkgs = Dependency[p for p in pkgs]
+    # We need to concretize these pkgs pretty immediately, so do that here
+    pkgs = concretize_dependencies(ctx, pkgs)
 
-    for idx in 1:length(pkgs)
-        # We need to concretize these pkgs pretty immediately, so do that here
-        entry = manifest_info(ctx.env, pkgs[idx].uuid) 
-        pkgs[idx] = concretize_dependency(pkgs[idx], entry)
-
-        # Next, pass off to up_load_versions!()
-        new = up_load_versions!(pkgs[idx], entry, level)
-        new && push!(new_git, pkgs[idx].uuid) #TODO put download + push! in utility function
+    for pkg in pkgs
+        new = up_load_versions!(pkg, manifest_info(ctx.env, pkg.uuid), level)
+        new && push!(new_git, pkg.uuid) #TODO put download + push! in utility function
     end
     # make sure to include at least direct deps
     for (name, uuid) in ctx.env.project.deps
@@ -1235,7 +1217,7 @@ function up(ctx::Context, pkgs::Vector{<:Dependency}, level::UpgradeLevel)
     # TODO what to do about repo packages?
 end
 
-function update_package_pin!(pkg::PackageSpec, ::Nothing)
+function update_package_pin!(pkg::Dependency, ::Nothing)
     if pkg.version == VersionSpec() # no version to pin
         pkgerror("Can not `pin` a package which does not exist in the manifest")
     end
@@ -1243,7 +1225,7 @@ function update_package_pin!(pkg::PackageSpec, ::Nothing)
     pkg.pinned = true
 end
 
-function update_package_pin!(pkg::PackageSpec, entry::ManifestEntry)
+function update_package_pin!(pkg::Dependency, entry::ManifestEntry)
     is_stdlib(pkg.uuid) && pkgerror("cannot `pin` stdlibs.")
     !entry.pinned || pkgerror("`$(entry.name)` already pinned, use `free` first.")
     entry.path === nothing || pkgerror("Can not `pin` `dev`ed package")
@@ -1253,7 +1235,10 @@ function update_package_pin!(pkg::PackageSpec, entry::ManifestEntry)
     pkg.repo = entry.repo
 end
 
-function pin(ctx::Context, pkgs::Vector{PackageSpec})
+function pin(ctx::Context, pkgs::Vector{<:Dependency})
+    # We need to concretize these pkgs pretty immediately, so do that here
+    pkgs = concretize_dependencies(ctx, pkgs)
+
     foreach(pkg -> update_package_pin!(pkg, manifest_info(ctx.env, pkg.uuid)), pkgs)
     load_direct_deps!(ctx, pkgs)
     check_registered(ctx, pkgs)
@@ -1261,6 +1246,7 @@ function pin(ctx::Context, pkgs::Vector{PackageSpec})
     # TODO check that versions exist ? -> I guess resolve_versions should check ?
     resolve_versions!(ctx, pkgs)
     update_manifest!(ctx, pkgs)
+    
 
     new = download_source(ctx, pkgs)
     write_env(ctx) # write env before building
@@ -1270,6 +1256,7 @@ end
 update_package_free!(pkg::PackageSpec, ::Nothing) =
     pkgerror("Trying to free a package which does not exist in the manifest")
 function update_package_free!(pkg::PackageSpec, entry::ManifestEntry)
+    @info "update_package_free!", pkg, entry
     # TODO check that `pin` and `path` do not occur in same node when reading manifest
     if entry.pinned
         pkg.pinned = false
@@ -1286,7 +1273,10 @@ end
 
 # TODO: this is two techinically different operations with the same name
 # split into two subfunctions ...
-function free(ctx::Context, pkgs::Vector{PackageSpec})
+function free(ctx::Context, pkgs::Vector{<:Dependency})
+    # We need to concretize these pkgs pretty immediately, so do that here
+    pkgs = concretize_dependencies(ctx, pkgs)
+
     foreach(pkg -> update_package_free!(pkg, manifest_info(ctx.env, pkg.uuid)), pkgs)
 
     if any(pkg -> pkg.version == VersionSpec(), pkgs)
@@ -1406,8 +1396,11 @@ end
 
 testdir(source_path::String) = joinpath(source_path, "test")
 testfile(source_path::String) = joinpath(testdir(source_path), "runtests.jl")
-function test(ctx::Context, pkgs::Vector{PackageSpec}; coverage=false, test_fn=nothing)
+function test(ctx::Context, pkgs::Vector{<:Dependency}; coverage=false, test_fn=nothing)
     ctx.preview || Pkg.instantiate(ctx)
+
+    # We need to concretize these pkgs pretty immediately, so do that here
+    pkgs = concretize_dependencies(ctx, pkgs)
 
     # load manifest data
     for pkg in pkgs
