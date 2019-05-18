@@ -11,7 +11,7 @@ using REPL.TerminalMenus
 using ..Types, ..GraphType, ..Resolve, ..Pkg2, ..GitTools, ..Display
 import ..Types: get_repo_url
 import ..depots, ..depots1, ..devdir, ..Types.uuid_julia, ..Types.ManifestEntry
-import ..Pkg, ..triplet, ..Platform, ..platform_key_abi, ..choose_download, ..probe_platform_engines!, ..download_verify_unpack
+import ..Pkg, ..triplet, ..Platform, ..platform_key_abi, ..choose_download, ..probe_platform_engines!, ..download, ..unpack, ..download_verify_unpack
 using SHA
 
 
@@ -604,7 +604,7 @@ function install_archive(
     pkg::PackageSpec,
     urls::Vector{String},
     version_path::String;
-    verbose::Bool = false,
+    verbose::Bool = true,
 )::Bool
     for url in urls
         archive_url = get_archive_url_for_version(url, pkg.tree_hash)
@@ -1044,10 +1044,10 @@ function update_package_add(pkg::Dependency, entry::ManifestEntry, is_dep::Bool)
     if entry.pinned
         pkg.version == VersionSpec() ||
             @warn "`$(pkg.name)` is pinned at `v$(entry.version)`. Maintaining pinned version."
-        return PackageSpec(; uuid=pkg.uuid, name=pkg.name, pinned=true,
+        return typeof(pkg)(; uuid=pkg.uuid, name=pkg.name, pinned=true,
                              version=entry.version, tree_hash=entry.tree_hash)
     end
-    if entry.path !== nothing || entry.repo.url !== nothing || pkg.repo.url !== nothing
+    if entry.path !== nothing || entry.repo.url !== nothing || get_repo_url(pkg) !== nothing
         return pkg # overwrite everything, nothing to copy over
     end
     if is_stdlib(pkg.uuid)
@@ -1055,7 +1055,7 @@ function update_package_add(pkg::Dependency, entry::ManifestEntry, is_dep::Bool)
     elseif is_dep && ((isa(pkg.version, VersionNumber) && entry.version == pkg.version) ||
                       (!isa(pkg.version, VersionNumber) && entry.version ∈ pkg.version))
         # leave the package as is at the installed version
-        return PackageSpec(; uuid=pkg.uuid, name=pkg.name, version=entry.version,
+        return typeof(pkg)(; uuid=pkg.uuid, name=pkg.name, version=entry.version,
                              tree_hash=entry.tree_hash)
     end
     # adding a new version not compatible with the old version, so we just overwrite
@@ -1256,7 +1256,6 @@ end
 update_package_free!(pkg::PackageSpec, ::Nothing) =
     pkgerror("Trying to free a package which does not exist in the manifest")
 function update_package_free!(pkg::PackageSpec, entry::ManifestEntry)
-    @info "update_package_free!", pkg, entry
     # TODO check that `pin` and `path` do not occur in same node when reading manifest
     if entry.pinned
         pkg.pinned = false
