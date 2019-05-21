@@ -1,7 +1,7 @@
-function _update_manifest(ctx::Context, pkg::PackageSpec, hash::Union{SHA1, Nothing})
+function _update_manifest(ctx::Context, pkg::Dependency, hash::Union{SHA1, Nothing})
     env = ctx.env
-    uuid, name, version, path, special_action, repo = pkg.uuid, pkg.name, pkg.version, pkg.path, pkg.special_action, pkg.repo
-    hash === nothing && @assert (path != nothing || pkg.uuid in keys(ctx.stdlibs) || pkg.repo.url != nothing)
+    uuid, name, version, path, special_action = pkg.uuid, pkg.name, pkg.version, pkg.path, pkg.special_action
+    hash === nothing && @assert (path != nothing || pkg.uuid in keys(ctx.stdlibs) || get_repo_url(pkg) != nothing)
     # TODO I think ^ assertion is wrong, add-repo should have a hash
     entry = get!(env.manifest, uuid, Types.ManifestEntry())
     entry.name = name
@@ -24,8 +24,8 @@ function _update_manifest(ctx::Context, pkg::PackageSpec, hash::Union{SHA1, Noth
         elseif special_action == PKGSPEC_PINNED
             entry.pinned = true
         elseif special_action == PKGSPEC_REPO_ADDED
-            entry.repo.url = repo.url
-            entry.repo.rev = repo.rev
+            entry.repo.url = pkg.repo.url
+            entry.repo.rev = pkg.repo.rev
             path = find_installed(name, uuid, hash)
         end
         if entry.repo.url !== nothing
@@ -263,11 +263,12 @@ function apply_versions(ctx::Context, pkgs::Vector{PackageSpec}, hashes::Dict{UU
                     continue
                 end
                 try
-                    success = install_archive(urls[pkg.uuid], hashes[pkg.uuid], path)
+                    pkg.tree_hash = hashes[pkg.uuid]
+                    success = install_archive(ctx, pkg, urls[pkg.uuid], path)
                     if success && mode == :add
                         set_readonly(path) # In add mode, files should be read-only
                     end
-                    if ctx.use_only_tarballs_for_downloads && !success
+                    if (ctx.use_only_tarballs_for_downloads || pkg isa ArtifactSpec) && !success
                         pkgerror("failed to get tarball from $(urls[pkg.uuid])")
                     end
                     put!(results, (pkg, success, path))
@@ -382,8 +383,8 @@ end
 
 function collect_target_deps!(
     ctx::Context,
-    pkgs::Vector{PackageSpec},
-    pkg::PackageSpec,
+    pkgs::Vector{<:Dependency},
+    pkg::Dependency,
     target::String,
 )
     # Find the path to the package
@@ -437,7 +438,7 @@ end
 # at top level. Therefore we would like to execute the build or testing of a dependency using its own Project file as
 # the current environment. Being backwards compatible with REQUIRE file complicates the story a bit since these packages
 # do not have any Project files.
-function with_dependencies_loadable_at_toplevel(f, mainctx::Context, pkg::PackageSpec; might_need_to_resolve=false)
+function with_dependencies_loadable_at_toplevel(f, mainctx::Context, pkg::Dependency; might_need_to_resolve=false)
     # localctx is the context for the temporary environment we run the testing / building in
     localctx = deepcopy(mainctx)
     localctx.currently_running_target = true
@@ -550,7 +551,7 @@ function with_dependencies_loadable_at_toplevel(f, mainctx::Context, pkg::Packag
 end
 
 function backwards_compatibility_for_test(
-    ctx::Context, pkg::PackageSpec, testfile::String, pkgs_errored::Vector{String},
+    ctx::Context, pkg::Dependency, testfile::String, pkgs_errored::Vector{String},
     coverage
 )
     printpkgstyle(ctx, :Testing, pkg.name)

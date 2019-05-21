@@ -38,13 +38,17 @@ PackageToken(word::String)::PackageToken =
 function parse_package_args(args::Vector{PackageToken}; add_or_dev=false)::Vector{Dependency}
     # check for and apply PackageSpec modifier (e.g. `#foo` or `@v1.0.2`)
     function apply_modifier!(pkg::Dependency, args::Vector{PackageToken})
-        (isempty(args) || args[1] isa PackageIdentifier) && return
+        (isempty(args) || args[1] isa PackageIdentifier) && return pkg
         modifier = popfirst!(args)
         if modifier isa VersionRange
             pkg.version = VersionSpec(modifier)
         else # modifier isa Rev
+            # If it's a revision, we know that this must be a PackageSpec;
+            # it cannot be an Artifact, so we concretize it right here, right now.
+            pkg = PackageSpec(pkg)
             pkg.repo.rev = modifier.rev
         end
+        return pkg
     end
 
     pkgs = Dependency[]
@@ -52,7 +56,7 @@ function parse_package_args(args::Vector{PackageToken}; add_or_dev=false)::Vecto
         arg = popfirst!(args)
         if arg isa PackageIdentifier
             pkg = parse_package_identifier(arg; add_or_develop=add_or_dev)
-            apply_modifier!(pkg, args)
+            pkg = apply_modifier!(pkg, args)
             push!(pkgs, pkg)
         # Modifiers without a corresponding package identifier -- this is a user error
         else

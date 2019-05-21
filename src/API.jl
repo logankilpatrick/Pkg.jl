@@ -187,8 +187,10 @@ function pin(ctx::Context, pkgs::Vector{<:Dependency}; kwargs...)
     for pkg in pkgs
         pkg.name !== nothing || pkg.uuid !== nothing ||
             pkgerror("Must specify package by either `name` or `uuid`.")
-        pkg.repo.url === nothing || pkgerror("Can not specify `repo` url")
-        pkg.repo.rev === nothing || pkgerror("Can not specify `repo` rev")
+        if pkg isa PackageSpec
+            pkg.repo.url === nothing || pkgerror("Can not specify `repo` url")
+            pkg.repo.rev === nothing || pkgerror("Can not specify `repo` rev")
+        end
     end
 
     foreach(pkg -> pkg.mode = PKGMODE_PROJECT, pkgs)

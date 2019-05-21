@@ -191,6 +191,7 @@ PackageSpec(pkg::GenericDependency) = PackageSpec(;
     mode=pkg.mode,
     special_action=pkg.special_action
 )
+PackageSpec(pkg::PackageSpec) = deepcopy(pkg)
 
 ################
 # ArtifactSpec #
