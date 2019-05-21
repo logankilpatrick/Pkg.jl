@@ -188,6 +188,8 @@ function load_tree_hashes!(ctx::Context, pkgs::Vector{<:Dependency})
     for pkg in pkgs
         isa(pkg, PackageSpec) || continue
         tracking_registered_version(pkg) || continue
+        pkg.tree_hash === nothing || continue
+
         pkg.tree_hash = load_tree_hash(ctx, pkg)
     end
 end
@@ -1095,9 +1097,8 @@ function assert_can_add(ctx::Context, pkgs::Vector{<:Dependency})
 end
 
 function add(ctx::Context, pkgs::Vector{<:Dependency}, new_git=UUID[])
-    # We may mutate `pkgs`, including changing the types within it,
-    # so explicitly widen the container type
-    pkgs = Dependency[pkg for pkg in pkgs]
+    # We need to concretize these pkgs pretty immediately, so do that here
+    pkgs = concretize_dependencies(ctx, pkgs)
 
     assert_can_add(ctx, pkgs)
     # load manifest data

@@ -188,6 +188,7 @@ function destructure(manifest::Manifest)::Dict
         entry!(new_entry, "version", entry.version)
         entry!(new_entry, "git-tree-sha1", entry.tree_hash)
         entry!(new_entry, "tarball-hash-sha256", entry.tarball_hash)
+        entry!(new_entry, "kind", entry.kind)
         entry!(new_entry, "pinned", entry.pinned; default=false)
         path = entry.path
         if path !== nothing && Sys.iswindows() && !isabspath(path)
