@@ -2,7 +2,7 @@
 
 module Operations
 
-using UUIDs
+using UUIDs, SHA
 using Random: randstring
 import LibGit2
 
@@ -439,34 +439,46 @@ function get_archive_url_from_repo(url::String, ref)
 end
 
 function load_urls(ctx::Context, pkgs::Vector{PackageSpec})
-    archive_urls = Dict{UUID,Vector{String}}()
+    archive_urls = Dict{UUID,Vector{Pair{String,Union{Nothing,String}}}}()
     repo_urls = Dict{UUID,Vector{String}}()
     for pkg in pkgs
         name = pkg.name
         uuid = pkg.uuid
-        ver = pkg.version::VersionNumber
+        strver = string(pkg.version::VersionNumber)
         tree_hash = pkg.tree_hash
         repo_urls[uuid] = String[]
-        archive_urls[uuid] = String[]
+        archive_urls[uuid] = Pair{String,Union{Nothing,String}}[]
         for path in registered_paths(ctx.env, uuid)
             info = parse_toml(path, "Package.toml")
+            vers = parse_toml(path, "Versions.toml")
             # repo urls
             repo = info["repo"]
             repo in repo_urls[uuid] || push!(repo_urls[uuid], repo)
             # archive urls
+            ## 1. Version-specific URL
+            if haskey(vers[strver], "archive")
+                push!(archive_urls[uuid], vers[strver]["archive"]=>get(vers[strver], "sha256", nothing))
+            end
+            ## 2. Package-global URL
             if haskey(info, "archive")
                 arch = info["archive"]
                 arch = replace(arch, "{name}" => name)
                 arch = replace(arch, "{uuid}" => string(uuid))
-                arch = replace(arch, "{version}" => string(ver))
+                arch = replace(arch, "{version}" => strver)
                 arch = replace(arch, "{git-tree-sha1}" => tree_hash)
-                arch in archive_urls[uuid] || push!(archive_urls[uuid], arch)
+                if !(arch in archive_urls[uuid])
+                    push!(archive_urls[uuid], arch=>get(vers[strver], "sha256", nothing))
+                end
             end
             # try to create archive url from repo-url
             arch = get_archive_url_from_repo(repo, tree_hash)
-            arch !== nothing && !(arch in archive_urls[uuid]) && push!(archive_urls[uuid], arch)
+            if arch !== nothing && !(arch in archive_urls[uuid])
+                push!(archive_urls[uuid], arch=>nothing)
+            end
         end
     end
+    @show archive_urls
+    @show repo_urls
     return archive_urls, repo_urls
 end
 
@@ -482,17 +494,25 @@ end
 
 # Returns if archive successfully installed
 function install_archive(
-    urls::Vector{String},
+    urls::Vector{Pair{String,Union{Nothing,String}}},
     hash::SHA1,
     version_path::String
 )::Bool
-    for archive_url in urls
+    for (archive_url, sha256) in urls
         path = tempname() * randstring(6) * ".tar.gz"
         url_success = true
         cmd = BinaryProvider.gen_download_cmd(archive_url, path);
         try
             run(cmd, (devnull, devnull, devnull))
+            @info "sha256:" sha256 bytes2hex(open(SHA.sha256, path))
+            if sha256 !== nothing
+                if sha256 !== bytes2hex(open(SHA.sha256, path))
+                    @error("sha256 does not match")
+                    error("sha256 does not match")
+                end
+            end
         catch e
+            @info "something went wrong" e
             e isa InterruptException && rethrow()
             url_success = false
         end
@@ -580,12 +600,14 @@ end
 # install & update manifest
 function download_source(ctx::Context, pkgs::Vector{PackageSpec}; readonly=true)
     pkgs = filter(tracking_registered_version, pkgs)
-    repo_urls, archive_urls = load_urls(ctx, pkgs)
-    return download_source(ctx, pkgs, repo_urls, archive_urls; readonly=readonly)
+    archive_urls, repo_urls = load_urls(ctx, pkgs)
+    return download_source(ctx, pkgs, archive_urls, repo_urls; readonly=readonly)
 end
 
 function download_source(ctx::Context, pkgs::Vector{PackageSpec},
-                        repo_urls::Dict{UUID, Vector{String}}, archive_urls::Dict{UUID, Vector{String}}; readonly=true)
+                        archive_urls::Dict{UUID, Vector{Pair{String,Union{Nothing,String}}}},
+                        repo_urls::Dict{UUID, Vector{String}};
+                        readonly=true)
     BinaryProvider.probe_platform_engines!()
     new_versions = UUID[]
 
