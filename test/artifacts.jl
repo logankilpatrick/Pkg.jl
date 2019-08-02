@@ -133,11 +133,12 @@ end
         joinpath(ATS, "pkg.jl") =>  joinpath(ATS, "Artifacts.toml"),
         joinpath(ATS, "sub_module", "pkg.jl") =>  joinpath(ATS, "Artifacts.toml"),
         joinpath(ATS, "sub_package", "pkg.jl") =>  joinpath(ATS, "sub_package", "Artifacts.toml"),
+        joinpath(ATS, "julia_artifacts_test", "pkg.jl") =>  joinpath(ATS, "julia_artifacts_test", "JuliaArtifacts.toml"),
         joinpath(@__DIR__, "test_packages", "BasicSandbox", "src", "Foo.jl") => nothing,
     ]
     for (test_src, artifacts_toml) in test_modules
         # Test that the Artifacts.toml that was found is what we expected
-        @test find_artifact_toml(test_src) == artifacts_toml
+        @test find_artifacts_toml(test_src) == artifacts_toml
 
         # Load `arty` and check its gitsha
         if artifacts_toml !== nothing

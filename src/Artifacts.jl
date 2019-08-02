@@ -10,7 +10,7 @@ import ..PlatformEngines: download_verify_unpack, probe_platform_engines!, packa
 
 export create_artifact, artifact_exists, artifact_path, remove_artifact, verify_artifact,
        artifact_meta, artifact_hash, bind_artifact, unbind_artifact, download_artifact,
-       find_artifact_toml, ensure_artifact_installed, @artifact_str, archive_artifact
+       find_artifacts_toml, ensure_artifact_installed, @artifact_str, archive_artifact
 
 ## Philosophy of Artifacts:
 #
@@ -67,7 +67,7 @@ export create_artifact, artifact_exists, artifact_path, remove_artifact, verify_
 #     `download_artifact()`, does the lookups and loop around multiple download URLs.
 #
 # - Utilities:
-#   - find_artifact_toml(path): Attempts to find the Artifacts.toml that exists for a
+#   - find_artifacts_toml(path): Attempts to find the Artifacts.toml that exists for a
 #     given source path.  Returns `nothing` if none could be found.
 
 
@@ -458,26 +458,35 @@ function download_artifact(tree_hash::SHA1, tarball_url::String, tarball_hash::S
 end
 
 """
-    find_artifact_toml(path::String)
+    find_artifacts_toml(path::String)
 
 Given the path to a `.jl` file, (such as the one returned by `__source__.file` in a macro
 context), find the `Artifacts.toml` that is contained within the containing project (if it
 exists), otherwise return `nothing`.
 """
-function find_artifact_toml(path::String)
+function find_artifacts_toml(path::String)
     if !isdir(path)
         path = dirname(path)
     end
 
+    # Run until we hit the root directory.
     while dirname(path) != path
+        @show path
+        # Also check for `JuliaArtifacts.toml`, preferring that as it's more specific
+        artifacts_toml_path = joinpath(path, "JuliaArtifacts.toml")
+        if isfile(artifacts_toml_path)
+            return abspath(artifacts_toml_path)
+        end
+
         # Does this `Artifacts.toml` exist?
-        artifact_toml_path = joinpath(path, "Artifacts.toml")
-        if isfile(artifact_toml_path)
-            return abspath(artifact_toml_path)
+        artifacts_toml_path = joinpath(path, "Artifacts.toml")
+        if isfile(artifacts_toml_path)
+            return abspath(artifacts_toml_path)
         end
 
         # Does a `Project.toml` file exist here, in the absence of an Artifacts.toml?
-        # If so, stop the search as we've probably hit the top-level of this 
+        # If so, stop the search as we've probably hit the top-level of this package,
+        # and we don't want to escape out into the larger filesystem.
         if isfile(joinpath(path, "Project.toml"))
             return nothing
         end
@@ -567,7 +576,7 @@ location on-disk.  Automatically looks the artifact up by name in the project's
 """
 macro artifact_str(name)
     return quote
-        local artifacts_toml = $(find_artifact_toml)($(string(__source__.file)))
+        local artifacts_toml = $(find_artifacts_toml)($(string(__source__.file)))
         if artifacts_toml === nothing
             error(string(
                 "Cannot locate 'Artifacts.toml' file when attempting to use artifact '",
