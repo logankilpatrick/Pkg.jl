@@ -179,8 +179,8 @@ function archive_artifact(hash::SHA1, tarball_path::String)
         error("Unable to archive artifact $(bytes2hex(hash.bytes)): does not exist!")
     end
 
-	# Package it up
-	package(artifact_path(hash), tarball_path)
+    # Package it up
+    package(artifact_path(hash), tarball_path)
 
     # Calculate its sha256 and return that
     return open(tarball_path, "r") do io
