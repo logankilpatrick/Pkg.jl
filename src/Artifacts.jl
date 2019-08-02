@@ -471,7 +471,6 @@ function find_artifacts_toml(path::String)
 
     # Run until we hit the root directory.
     while dirname(path) != path
-        @show path
         # Also check for `JuliaArtifacts.toml`, preferring that as it's more specific
         artifacts_toml_path = joinpath(path, "JuliaArtifacts.toml")
         if isfile(artifacts_toml_path)
