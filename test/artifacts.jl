@@ -232,7 +232,7 @@ end
         # Also manually do it
         @eval begin
             using ArtifactInstallation
-            @test invokeArtifactInstallation.do_test()
+            @test ArtifactInstallation.do_test()
         end
     end
 end
